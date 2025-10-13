@@ -23,7 +23,7 @@ input_size = 2
 # 隐藏层的维度，要怎么选型（什么时候用多少层）
 # 隐藏层的维度，要根据问题的复杂程度来选择。如果问题比较简单，隐藏层的维度可以小一些。如果问题比较复杂，隐藏层的维度可以大一些。
 # 一般来说，隐藏层的维度越大，神经网络的表达能力越强，但是也会增加计算量和过拟合的风险。
-hidden_size = 5  # 隐藏层的神经元数量
+hidden_size = 4  # 隐藏层的神经元数量
 
 
 # 简单任务(线性回归和低维分类)，一层就够了（万能近似定理）
@@ -92,6 +92,7 @@ def forward(X):
 def binary_cross_entropy(y_true, y_pred):
     # 避免log(0)的情况
     epsilon = 1e-15
+    # 对y_pred的最大值和最小值做限制，避免出现log(0)或者log(1)的情况
     y_pred = np.clip(y_pred, epsilon, 1 - epsilon)
     return -np.mean(y_true * np.log(y_pred) + (1 - y_true) * np.log(1 - y_pred))
 
@@ -109,7 +110,7 @@ def binary_cross_entropy(y_true, y_pred):
 # 3）小批量梯度下降（Mini-batch Gradient Descent）：每次使用一小批量样本（如32个样本）计算梯度，更新参数。
 
 
-def backward(X, y, z1, a1, z2, a2, learning_rate=0.1):
+def backward(X, y, z1, a1, z2, a2, learning_rate=0.2):
     global W1, W2, b1, b2
     # 这一步需要计算出输出结果的误差，用这个误差，去指导W1,W2,b1,b2的更新方向
     # 更新的公式: W -> W - 学习率 * d_loss/d_W
@@ -129,9 +130,8 @@ def backward(X, y, z1, a1, z2, a2, learning_rate=0.1):
     d_W2 = np.dot(a1.T, d_z2)  # 损失对W2的导数
     d_b2 = np.sum(d_z2, axis=0, keepdims=True)  # 损失对b2的导数
 
-    temp1 = W2.T
     # 隐藏层误差
-    d_a1 = np.dot(d_z2, temp1)  # 损失对a1的导数
+    d_a1 = np.dot(d_z2, W2.T)  # 损失对a1的导数
     d_z1 = d_a1 * activation_function_derivative(z1)  # 损失对z1的导数
     d_W1 = np.dot(X.T, d_z1)  # 损失对W1的导数
     d_b1 = np.sum(d_z1, axis=0, keepdims=True)  # 损失对b1的导数
@@ -145,7 +145,7 @@ def backward(X, y, z1, a1, z2, a2, learning_rate=0.1):
 
 # 训练神经网络
 
-epochs = 20000
+epochs = 5000
 for i in range(epochs):
     # 向前传播
     z1, a1, z2, a2 = forward(X)
@@ -153,7 +153,7 @@ for i in range(epochs):
     # 计算损失
     loss = binary_cross_entropy(y, a2)
 
-    if i % 1000 == 0:
+    if i % (epochs/20) == 0:
         print(f"Epoch {i+1}/{epochs}, Loss: {loss:.4f}")
 
     # 反向传播

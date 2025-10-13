@@ -8,6 +8,16 @@ import src.utils.activation_func.relu as relu
 _datasetPath = kagglehub.dataset_download("hojjatk/mnist-dataset")
 print("Path to dataset files:", _datasetPath)
 
+# 神经网络定义
+# 为了简化问题，我们不实现根据数据集自动调整网络结构的功能
+# 输入固定位MNIST，输入28*28 + 一个颜色通道，输出固定是0-9这10个类别
+input_size = 28 * 28  # 输入层节点数
+hidden_size = 128  # 隐藏层节点数，可以调整
+output_size = 10  # 输出层节点数
+learning_rate = 0.05  # 学习率，可以调整
+num_epochs = 30  # 训练轮数，可以调整
+batch_size = 64  # mini-batch的批处理大小，可以调整
+
 
 def load_mnist_images(filename):
     with open(os.path.join(_datasetPath, filename, filename), "rb") as f:
@@ -64,31 +74,27 @@ def one_hot_encode(labels, num_classes=10):
     return one_hot
 
 
-# 神经网络定义
-# 为了简化问题，我们不实现根据数据集自动调整网络结构的功能
-# 输入固定位MNIST，输入28*28 + 一个颜色通道，输出固定是0-9这10个类别
-input_size = 28 * 28  # 输入层节点数
-hidden_size = 256  # 隐藏层节点数，可以调整
-output_size = 10  # 输出层节点数
-learning_rate = 0.2 # 学习率，可以调整
-num_epochs = 100  # 训练轮数，可以调整
-
 # 我们设计一个三层的神经网络，输入层-隐藏层-输出层
 
 # 初始化权重和偏置
 np.random.seed(42)  # 为了结果可复现，设置随机种子
-W1 = np.random.randn(input_size, hidden_size) * 0.01  # 输入层到隐藏层的权重
+# W1 = np.random.randn(input_size, hidden_size) * 0.01  # 输入层到隐藏层的权重
+W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2.0 / input_size)
 b1 = np.zeros((1, hidden_size))  # 隐藏层偏置
-W2 = np.random.randn(hidden_size, output_size) * 0.01  # 隐藏层到输出层的权重
+# W2 = np.random.randn(hidden_size, output_size) * 0.01  # 隐藏层到输出层的权重
+W2 = np.random.randn(hidden_size, output_size) * np.sqrt(2.0 / hidden_size)
 b2 = np.zeros((1, output_size))  # 输出层偏置
 
 
 # 损失函数用交叉熵损失
 def compute_loss(y_true, y_pred):
     m = y_true.shape[0]
+
     # 避免log(0)的情况
-    y_pred = np.clip(y_pred, 1e-15, 1 - 1e-15)
-    loss = -np.sum(y_true * np.log(y_pred)) / m
+    y_pred_clip = np.clip(y_pred, 1e-15, 1 - 1e-15)
+
+    loss = -np.log(y_pred_clip[range(m), np.argmax(y_true, axis=1)])
+    loss = np.sum(loss) / m
     return loss
 
 
@@ -109,7 +115,8 @@ def backward(x, y, z1, a1, z2, a2):
     dW2 = np.dot(a1.T, dz2) / m
     db2 = np.sum(dz2, axis=0, keepdims=True) / m
 
-    dz1 = np.dot(dz2, W2.T) * relu.derivative(z1)
+    da1 = np.dot(dz2, W2.T)
+    dz1 = da1 * relu.derivative(z1)
     dW1 = np.dot(x.T, dz1) / m
     db1 = np.sum(dz1, axis=0, keepdims=True) / m
 
@@ -126,6 +133,8 @@ def update_parameters(dW1, db1, dW2, db2):
 
 # 训练模型
 
+count = 0
+
 
 def train_model():
     (train_images, train_labels), (test_images, test_labels) = loaddataset()
@@ -133,20 +142,43 @@ def train_model():
     test_labels_one_hot = one_hot_encode(test_labels)
 
     for epoch in range(num_epochs):
-        # 向前传播
-        z1, a1, z2, a2 = forward(train_images)
 
-        # 计算损失
-        loss = compute_loss(train_labels_one_hot, a2)
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss:.4f}")
+        for i in range(0, train_images.shape[0], batch_size):
+            global count
+            image_batch = train_images[i : i + batch_size]
+            label_batch = train_labels_one_hot[i : i + batch_size]
 
-        # 向后传播
-        dW1, db1, dW2, db2 = backward(
-            train_images, train_labels_one_hot, z1, a1, z2, a2
-        )
+            # 向前传播
+            z1, a1, z2, a2 = forward(image_batch)
 
-        # 更新参数
-        update_parameters(dW1, db1, dW2, db2)
+            # 计算损失
+            loss = compute_loss(label_batch, a2)
+
+            # 向后传播
+            dW1, db1, dW2, db2 = backward(image_batch, label_batch, z1, a1, z2, a2)
+
+            # 更新参数
+            update_parameters(dW1, db1, dW2, db2)
+            count += 1
+            if count % 100 == 0:
+                print(
+                    f"Epoch {epoch+1}/{num_epochs}, Batch {i//batch_size+1}, Loss: {loss:.4f}"
+                )
+
+        # # 向前传播
+        # z1, a1, z2, a2 = forward(train_images)
+
+        # # 计算损失
+        # loss = compute_loss(train_labels_one_hot, a2)
+        # print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss:.4f}")
+
+        # # 向后传播
+        # dW1, db1, dW2, db2 = backward(
+        #     train_images, train_labels_one_hot, z1, a1, z2, a2
+        # )
+
+        # # 更新参数
+        # update_parameters(dW1, db1, dW2, db2)
 
     # 在测试集上评估模型
     _, _, _, test_a2 = forward(test_images)

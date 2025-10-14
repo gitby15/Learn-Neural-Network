@@ -3,6 +3,7 @@ import kagglehub
 import os
 import src.utils.activation_func.softmax as softmax
 import src.utils.activation_func.relu as relu
+import src.utils.vision.handwriting_web.app as webapp
 
 # 用kagglehub下载mnist数据集，不需要每次执行都重复下载，也不需要手动处理数据集，比较方便
 _datasetPath = kagglehub.dataset_download("hojjatk/mnist-dataset")
@@ -14,9 +15,12 @@ print("Path to dataset files:", _datasetPath)
 input_size = 28 * 28  # 输入层节点数
 hidden_size = 128  # 隐藏层节点数，可以调整
 output_size = 10  # 输出层节点数
-learning_rate = 0.05  # 学习率，可以调整
-num_epochs = 30  # 训练轮数，可以调整
-batch_size = 64  # mini-batch的批处理大小，可以调整
+
+# 超参数
+learning_rate = 0.1  # 学习率，可以调整
+num_epochs = 10  # 训练轮数，可以调整
+batch_size = 32  # mini-batch的批处理大小，可以调整
+momentum = 0.9  # 动量，可以调整
 
 
 def load_mnist_images(filename):
@@ -34,7 +38,6 @@ def load_mnist_images(filename):
 
         # 将这个一维数组按照图片切分
         images = images.reshape(num_images, rows * cols)
-        print(images.shape)
 
         # 将像素值归一化到0-1之间
         images = images.astype(np.float32) / 255.0
@@ -65,10 +68,10 @@ def loaddataset():
     return (train_images, train_labels), (test_images, test_labels)
 
 
+# 创建one hot标签, 把image和label关联起来
 def one_hot_encode(labels, num_classes=10):
     # 创建一个全零矩阵，行数为标签数量，列数为类别数量
     one_hot = np.zeros((labels.shape[0], num_classes))
-    print(np.arange(labels.shape[0]))
     # 将对应类别的位置设为1
     one_hot[np.arange(labels.shape[0]), labels] = 1
     return one_hot
@@ -76,14 +79,16 @@ def one_hot_encode(labels, num_classes=10):
 
 # 我们设计一个三层的神经网络，输入层-隐藏层-输出层
 
-# 初始化权重和偏置
+# 初始化权重和偏置，使用了He初始化
 np.random.seed(42)  # 为了结果可复现，设置随机种子
-# W1 = np.random.randn(input_size, hidden_size) * 0.01  # 输入层到隐藏层的权重
 W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2.0 / input_size)
 b1 = np.zeros((1, hidden_size))  # 隐藏层偏置
-# W2 = np.random.randn(hidden_size, output_size) * 0.01  # 隐藏层到输出层的权重
 W2 = np.random.randn(hidden_size, output_size) * np.sqrt(2.0 / hidden_size)
 b2 = np.zeros((1, output_size))  # 输出层偏置
+velocity_W1 = np.zeros_like(W1)
+velocity_b1 = np.zeros_like(b1)
+velocity_W2 = np.zeros_like(W2)
+velocity_b2 = np.zeros_like(b2)
 
 
 # 损失函数用交叉熵损失
@@ -93,7 +98,10 @@ def compute_loss(y_true, y_pred):
     # 避免log(0)的情况
     y_pred_clip = np.clip(y_pred, 1e-15, 1 - 1e-15)
 
+    # 选出每一个样本，对应真实类别的预测概率
     loss = -np.log(y_pred_clip[range(m), np.argmax(y_true, axis=1)])
+
+    # 求平均值
     loss = np.sum(loss) / m
     return loss
 
@@ -124,11 +132,16 @@ def backward(x, y, z1, a1, z2, a2):
 
 
 def update_parameters(dW1, db1, dW2, db2):
-    global W1, b1, W2, b2
-    W1 -= learning_rate * dW1
-    b1 -= learning_rate * db1
-    W2 -= learning_rate * dW2
-    b2 -= learning_rate * db2
+    global W1, b1, W2, b2, velocity_W1, velocity_b1, velocity_W2, velocity_b2
+    # 使用动量法更新参数
+    velocity_W1 = momentum * velocity_W1 + learning_rate * dW1
+    velocity_b1 = momentum * velocity_b1 + learning_rate * db1
+    velocity_W2 = momentum * velocity_W2 + learning_rate * dW2
+    velocity_b2 = momentum * velocity_b2 + learning_rate * db2
+    W1 -= velocity_W1
+    b1 -= velocity_b1
+    W2 -= velocity_W2
+    b2 -= velocity_b2
 
 
 # 训练模型
@@ -162,7 +175,7 @@ def train_model():
             count += 1
             if count % 100 == 0:
                 print(
-                    f"Epoch {epoch+1}/{num_epochs}, Batch {i//batch_size+1}, Loss: {loss:.4f}"
+                    f"Count {count} Epoch {epoch+1}/{num_epochs}, Batch {i//batch_size+1}, Loss: {loss:.4f}"
                 )
 
         # # 向前传播
@@ -192,5 +205,34 @@ def train_model():
     print(f"Test Accuracy For Train Suite: {accuracy * 100:.2f}%")
 
 
-if __name__ == "__main__":
+def predict(image):
+    # image是一个一维数组，长度是28*28=784，值是0-255
+    # 需要把它转换成和训练时一样的格式
+    image = np.array(image).astype(np.float32) / 255.0  # 归一化到0-1
+    image = image.reshape(1, -1)  # 转换成二维数组，行数是1，列数是784
+
+    # 向前传播
+    _, _, _, a2 = forward(image)
+
+    # 取最大值的索引作为预测结果
+    prediction = np.argmax(a2, axis=1)[0]
+    return prediction
+
+
+if __name__ == "__main1__":
+    now = os.times()
     train_model()
+    print("Time used:", os.times()[0] - now[0], "seconds")
+    webapp.Launch(predict)
+
+if __name__ == "__main__":
+    (train_images, train_labels), (test_images, test_labels) = loaddataset()
+    first_image = train_images[0]
+    print("First image shape:", first_image.shape)
+    print("First image label:", first_image)
+    import matplotlib.pyplot as plt
+
+# 跟上一章节的区别：
+# 1. 增加了mini-batch的支持
+# 2. 增加了He初始化
+# 3. 增加了动量法

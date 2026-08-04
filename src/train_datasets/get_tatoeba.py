@@ -1,8 +1,8 @@
-import torch
+import re
 from pathlib import Path
 
 FOLDER_PATH = Path(__file__).resolve().parent
-FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_tgt.tsv"
+FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_sorted.tsv"
 
 PAD_TOKEN = "<PAD>"
 PAD_IDX = 0
@@ -27,7 +27,9 @@ _test_pairs = []
 _src_vocab = {PAD_TOKEN: PAD_IDX, SOS_TOKEN: SOS_IDX, EOS_TOKEN: EOS_IDX, UNK_TOKEN: UNK_IDX}
 _tgt_vocab = {PAD_TOKEN: PAD_IDX, SOS_TOKEN: SOS_IDX, EOS_TOKEN: EOS_IDX, UNK_TOKEN: UNK_IDX}
 
-
+def split_eng_word(sentence: str) -> list[str]:
+    sentence = re.sub(r'([.,!?;:"()\[\]{}\-&])', r' \1 ', sentence)
+    return [token for token in sentence.split(' ') if token]
 
 def read_file(file_path: Path) -> list[str]:
     with open(file_path, "r", encoding="utf-8") as f:
@@ -36,7 +38,7 @@ def read_file(file_path: Path) -> list[str]:
 
 def build_vocab(pairs: list[tuple[str, str]]):
     for src, tgt in pairs:
-        for src_token in src.split(' '):
+        for src_token in split_eng_word(src):
             if src_token not in _src_vocab:
                 _src_vocab[src_token] = len(_src_vocab)
         for tgt_token in tgt.strip():
@@ -46,21 +48,28 @@ def build_vocab(pairs: list[tuple[str, str]]):
 
 def build_pairs():
     lines = read_file(FILE_PATH)
-    _split_idx = 50
+    _split_idx = 10
     _filter_len = 6
-    for line in lines[:-_split_idx]:
-        temp = line.split("\t")
-        src = temp[0].lower()
-        if len(src.split(' ')) > _filter_len:
-            continue
-        _tarin_pairs.append((src, temp[1]))
+    test_pair_ratio = 10
 
-    for line in lines[-_split_idx:]:
-        temp = line.split("\t")
-        src = temp[0].lower()
-        _test_pairs.append((src, temp[1]))
-    print(f"origin_len: {len(lines)}, filtered_len: {len(_tarin_pairs + _test_pairs)}")
-    build_vocab(_tarin_pairs + _test_pairs)
+    def _english_word_count(line: str) -> int:
+        parts = split_eng_word(line)
+        return len(parts)
+
+    _index = 0
+    for line in lines:
+        line = line.split('\t')
+        if _english_word_count(line[0]) > _filter_len:
+            break
+        if _index%test_pair_ratio == 0:
+            _test_pairs.append((line[0].lower(), line[1]))
+        else:
+            _tarin_pairs.append((line[0].lower(), line[1]))
+        _index += 1
+        
+        
+    print(f"origin_len: {len(lines)}, train_pairs_len: {len(_tarin_pairs)}, test_pairs_len: {len(_test_pairs)}")
+    build_vocab(_tarin_pairs)
 
 
 def get_dataset():

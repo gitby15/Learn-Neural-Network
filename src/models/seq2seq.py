@@ -1,3 +1,4 @@
+import time
 import random
 
 import torch
@@ -13,7 +14,7 @@ print("using device:", DEVICE)
 
 TRAIN_LIMIT = 5000
 TEST_LIMIT = 50
-BATCH_SIZE = 32
+BATCH_SIZE = 31
    
 HIDDEN_SIZE = 256
 EMBED_SIZE = 128
@@ -178,7 +179,8 @@ def main():
     epochs = 30
     progress = tqdm(range(epochs), desc="Training")
 
-
+    _train_start_time = time.time()
+    print("traning start: ", _train_start_time)
     for _ in progress:
         model.train()
         epoch_loss = 0.0
@@ -200,14 +202,16 @@ def main():
         progress.set_postfix(loss=f"{epoch_loss / len(epoch_batches):.6f}")
         print("")
         print(f"epoch_loss: {epoch_loss / len(epoch_batches):.6f}")
-
+    
+    _train_end_time = time.time()
+    print("traning end: ", _train_end_time)
+    print(f"training time: {(_train_end_time - _train_start_time)  / 60:.2f} min")
 
     model.eval()
     inference_avg_loss = 0.0
     inference_count = 0
     with torch.no_grad():
-        test_progress = tqdm(test_pairs, desc="Testing")
-        for test_pair in test_progress:
+        for test_pair in test_pairs[:20]:
             source_sequences, target_sequences = test_pair
             
             src_seq = [special_tokens[1]] + tokenize_source(source_sequences) + [special_tokens[2]]
@@ -228,9 +232,9 @@ def main():
             )
             inference_avg_loss += inference_loss.item()
             inference_count += 1
-            progress.set_postfix(loss=f"{inference_loss.item():.6f}")
+            # progress.set_postfix(loss=f"{inference_loss.item():.6f}")
             print("")
-            print(f"input len: {len(src_seq)} | loss: {inference_loss.item():.6f}")
+            print(f"input: {' '.join(src_seq)} | output: {''.join(output_tokens)} | expect: {''.join(tgt_output_seq)} | loss: {inference_loss.item():.6f}")
            
         
     print(f"inference_avg_loss: {inference_avg_loss/inference_count:.6f}")

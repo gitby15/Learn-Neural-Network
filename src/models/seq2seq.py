@@ -3,18 +3,11 @@ import random
 import torch
 from torch import nn
 from tqdm import tqdm
-from datasets import load_dataset
 
-DEVICE = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-# DEVICE = torch.device("cpu")
+from train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX, get_dataset
 
-PAD_TOKEN = "<padding>"
-SOS_TOKEN = "<start_of_sequence>"
-EOS_TOKEN = "<end_of_sequence>"
-
-PAD_IDX = 0
-SOS_IDX = 1
-EOS_IDX = 2
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+print("using device:", DEVICE)
 
 TRAIN_LIMIT = 5000
 TEST_LIMIT = 50
@@ -23,70 +16,20 @@ BATCH_SIZE = 32
 HIDDEN_SIZE = 64
 EMBED_SIZE = 32
 
-def build_vocab(pairs):
-    src_vocab = {
-        PAD_TOKEN: PAD_IDX,
-        SOS_TOKEN: SOS_IDX,
-        EOS_TOKEN: EOS_IDX,
-    }
-    tgt_vocab = {
-        PAD_TOKEN: PAD_IDX,
-        SOS_TOKEN: SOS_IDX,
-        EOS_TOKEN: EOS_IDX,
-    }
-    for source_sequences, target_sequences in pairs:
-        for token in source_sequences:
-            if token not in src_vocab:
-                src_vocab[token] = len(src_vocab)
-        for token in target_sequences:
-            if token not in tgt_vocab:
-                tgt_vocab[token] = len(tgt_vocab)
-    return src_vocab, tgt_vocab
+  
+   
 
 def index_to_token(index, vocab):
     return next(token for token, idx in vocab.items() if idx == index)
 
+
 def tokenize_source(text):
-    return text.split()
+    return text.strip().split()
+
 
 def tokenize_target(text):
-    return list(text.replace(" ", ""))
+    return list(text.strip())
 
-def build_dataset():
-    ds = load_dataset("Helsinki-NLP/opus-100", "en-zh")
-    train_ds = ds["train"]
-    test_ds = ds["test"]
-    pairs = []
-    test_pairs = []
-    for item in train_ds:
-        source_tokens = tokenize_source(item["translation"]["en"])
-        target_tokens = tokenize_target(item["translation"]["zh"])
-        if not source_tokens or not target_tokens:
-            continue
-        pairs.append((source_tokens, target_tokens))
-        if len(pairs) >= TRAIN_LIMIT:
-            break
-
-    for item in test_ds:
-        source_tokens = tokenize_source(item["translation"]["en"])
-        target_tokens = tokenize_target(item["translation"]["zh"])
-        if not source_tokens or not target_tokens:
-            continue
-        test_pairs.append((source_tokens, target_tokens))
-        if len(test_pairs) >= TEST_LIMIT:
-            break
-
-    src_vocab, tgt_vocab = build_vocab(pairs + test_pairs)
-    return (
-        pairs,
-        test_pairs,
-        src_vocab,
-        tgt_vocab,
-    )
-
-
-  
-   
 
 class Encoder(nn.Module):
     def __init__(self, src_vocab):
@@ -153,7 +96,10 @@ class Seq2SeqModel(nn.Module):
     
         
 def get_tensor(sequences, vocab):
-    tensor = torch.tensor([vocab[token] for token in sequences]).unsqueeze(1)
+    tensor = torch.tensor(
+        [vocab.get(token, UNK_IDX) for token in sequences],
+        dtype=torch.long,
+    ).unsqueeze(1)
     tensor = tensor.to(DEVICE)
     return tensor
 
@@ -161,20 +107,22 @@ def pad_sequences(sequences, vocab):
     max_len = max(len(sequence) for sequence in sequences)
     padded = []
     for sequence in sequences:
-        token_ids = [vocab[token] for token in sequence]
+        token_ids = [vocab.get(token, UNK_IDX) for token in sequence]
         token_ids += [PAD_IDX] * (max_len - len(token_ids))
         padded.append(token_ids)
     tensor = torch.tensor(padded, dtype=torch.long, device=DEVICE)
     return tensor.transpose(0, 1)
 
-def build_batch_tensors(batch_pairs, src_vocab, tgt_vocab):
+def build_batch_tensors(batch_pairs, src_vocab, tgt_vocab, special_tokens):
     src_sequences = []
     tgt_input_sequences = []
     tgt_output_sequences = []
     for source_sequences, target_sequences in batch_pairs:
-        src_sequences.append([SOS_TOKEN] + source_sequences)
-        tgt_input_sequences.append([SOS_TOKEN] + target_sequences)
-        tgt_output_sequences.append(target_sequences + [EOS_TOKEN])
+        src_tokens = [special_tokens[1]] + tokenize_source(source_sequences) + [special_tokens[2]]
+        tgt_tokens = tokenize_target(target_sequences)
+        src_sequences.append(src_tokens)
+        tgt_input_sequences.append([special_tokens[1]] + tgt_tokens)
+        tgt_output_sequences.append(tgt_tokens + [special_tokens[2]])
     src_tensor = pad_sequences(src_sequences, src_vocab)
     tgt_input_tensor = pad_sequences(tgt_input_sequences, tgt_vocab)
     tgt_output_tensor = pad_sequences(tgt_output_sequences, tgt_vocab)
@@ -189,14 +137,16 @@ def build_batches(pairs, batch_size, shuffle=True):
         for index in range(0, len(ordered_pairs), batch_size)
     ]
 
-def prepare_batches(pairs, batch_size, src_vocab, tgt_vocab):
-    pair_batches = build_batches(pairs, batch_size, shuffle=False)
+def prepare_batches(pairs, batch_size, src_vocab, tgt_vocab, special_tokens):
+    pair_batches = build_batches(pairs, batch_size)
     prepared_batches = []
-    for batch_pairs in pair_batches:
+    batch_progress = tqdm(pair_batches, desc="Preparing batches")
+    for batch_pairs in batch_progress:
         src_tensor, tgt_input_tensor, tgt_output_tensor = build_batch_tensors(
             batch_pairs,
             src_vocab,
             tgt_vocab,
+            special_tokens
         )
         prepared_batches.append((src_tensor, tgt_input_tensor, tgt_output_tensor))
     return prepared_batches
@@ -214,10 +164,12 @@ def align_logits_to_target(logits, target_tensor):
 
 
 def main():
-    (pairs, test_pairs, src_vocab, tgt_vocab) = build_dataset()
+    pairs, test_pairs, src_vocab, tgt_vocab, special_tokens = get_dataset()
+
     model = Seq2SeqModel(src_vocab, tgt_vocab)
     model.to(DEVICE)
-    train_batches = prepare_batches(pairs, BATCH_SIZE, src_vocab, tgt_vocab)
+
+    train_batches = prepare_batches(pairs, BATCH_SIZE, src_vocab, tgt_vocab, special_tokens)
 
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
@@ -249,11 +201,12 @@ def main():
     inference_avg_loss = 0.0
     inference_count = 0
     with torch.no_grad():
-        for test_pair in test_pairs:
+        test_progress = tqdm(test_pairs, desc="Testing")
+        for test_pair in test_progress:
             source_sequences, target_sequences = test_pair
             
-            src_seq = [SOS_TOKEN] + source_sequences
-            tgt_output_seq = target_sequences + [EOS_TOKEN]
+            src_seq = [special_tokens[1]] + tokenize_source(source_sequences) + [special_tokens[2]]
+            tgt_output_seq = tokenize_target(target_sequences) + [special_tokens[2]]
 
             src_tensor = get_tensor(src_seq, src_vocab)
             tgt_output_tensor = get_tensor(tgt_output_seq, tgt_vocab)
@@ -270,10 +223,7 @@ def main():
             )
             inference_avg_loss += inference_loss.item()
             inference_count += 1
-            print(f'===============[Loss: {inference_loss.item()}]=======================')
-            print(f"source_sequences: {source_sequences}")
-            print(f"target_tokens: {tgt_output_seq}")
-            print(f"output_tokens: {output_tokens}")
+            progress.set_postfix(loss=f"{inference_loss.item():.6f}")
         
     print(f"inference_avg_loss: {inference_avg_loss/inference_count:.6f}")
 

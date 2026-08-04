@@ -1,4 +1,3 @@
-from fcntl import F_GETPATH
 import torch
 from pathlib import Path
 
@@ -48,13 +47,19 @@ def build_vocab(pairs: list[tuple[str, str]]):
 def build_pairs():
     lines = read_file(FILE_PATH)
     _split_idx = 50
+    _filter_len = 6
     for line in lines[:-_split_idx]:
         temp = line.split("\t")
-        _tarin_pairs.append((temp[0], temp[1]))
+        src = temp[0].lower()
+        if len(src.split(' ')) > _filter_len:
+            continue
+        _tarin_pairs.append((src, temp[1]))
 
     for line in lines[-_split_idx:]:
         temp = line.split("\t")
-        _test_pairs.append((temp[0], temp[1]))
+        src = temp[0].lower()
+        _test_pairs.append((src, temp[1]))
+    print(f"origin_len: {len(lines)}, filtered_len: {len(_tarin_pairs + _test_pairs)}")
     build_vocab(_tarin_pairs + _test_pairs)
 
 

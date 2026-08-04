@@ -7,14 +7,16 @@ from tqdm import tqdm
 from train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX, get_dataset
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+print("cuda available: ", torch.cuda.is_available(), torch.version.cuda)
+print("mps available: ", torch.backends.mps.is_available())
 print("using device:", DEVICE)
 
 TRAIN_LIMIT = 5000
 TEST_LIMIT = 50
 BATCH_SIZE = 32
    
-HIDDEN_SIZE = 64
-EMBED_SIZE = 32
+HIDDEN_SIZE = 256
+EMBED_SIZE = 128
 
   
    
@@ -172,7 +174,7 @@ def main():
     train_batches = prepare_batches(pairs, BATCH_SIZE, src_vocab, tgt_vocab, special_tokens)
 
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
     epochs = 30
     progress = tqdm(range(epochs), desc="Training")
 
@@ -194,7 +196,10 @@ def main():
             optimizer.step()
             epoch_loss += loss.item()
         
+        
         progress.set_postfix(loss=f"{epoch_loss / len(epoch_batches):.6f}")
+        print("")
+        print(f"epoch_loss: {epoch_loss / len(epoch_batches):.6f}")
 
 
     model.eval()
@@ -224,6 +229,9 @@ def main():
             inference_avg_loss += inference_loss.item()
             inference_count += 1
             progress.set_postfix(loss=f"{inference_loss.item():.6f}")
+            print("")
+            print(f"input len: {len(src_seq)} | loss: {inference_loss.item():.6f}")
+           
         
     print(f"inference_avg_loss: {inference_avg_loss/inference_count:.6f}")
 

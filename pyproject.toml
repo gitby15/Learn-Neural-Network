@@ -1,0 +1,20 @@
+[project]
+name = "learn-neural-network"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "datasets>=4.5.0",
+    "numpy>=2.0.2",
+    "torch>=2.8.0",
+    "tqdm>=4.70.0",
+]
+
+[project.scripts]
+learn-neural-network = "learn_neural_network:main"
+seq2seq = "models.seq2seq:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"

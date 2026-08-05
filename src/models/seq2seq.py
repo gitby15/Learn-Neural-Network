@@ -1,34 +1,26 @@
+import time
 import random
 
 import torch
 from torch import nn
 from tqdm import tqdm
 
-from train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX, get_dataset
+from train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX, get_dataset, tokenize_source, tokenize_target, idx_list_to_token_source, idx_list_to_token_target
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+print("cuda available: ", torch.cuda.is_available(), torch.version.cuda)
+print("mps available: ", torch.backends.mps.is_available())
 print("using device:", DEVICE)
 
 TRAIN_LIMIT = 5000
 TEST_LIMIT = 50
 BATCH_SIZE = 32
    
-HIDDEN_SIZE = 64
-EMBED_SIZE = 32
+HIDDEN_SIZE = 128
+EMBED_SIZE = 64
 
   
    
-
-def index_to_token(index, vocab):
-    return next(token for token, idx in vocab.items() if idx == index)
-
-
-def tokenize_source(text):
-    return text.strip().split()
-
-
-def tokenize_target(text):
-    return list(text.strip())
 
 
 class Encoder(nn.Module):
@@ -95,19 +87,19 @@ class Seq2SeqModel(nn.Module):
 
     
         
-def get_tensor(sequences, vocab):
+def get_tensor(sequences):
     tensor = torch.tensor(
-        [vocab.get(token, UNK_IDX) for token in sequences],
+        sequences,
         dtype=torch.long,
     ).unsqueeze(1)
     tensor = tensor.to(DEVICE)
     return tensor
 
-def pad_sequences(sequences, vocab):
+def pad_sequences(sequences):
     max_len = max(len(sequence) for sequence in sequences)
     padded = []
     for sequence in sequences:
-        token_ids = [vocab.get(token, UNK_IDX) for token in sequence]
+        token_ids = list(sequence)
         token_ids += [PAD_IDX] * (max_len - len(token_ids))
         padded.append(token_ids)
     tensor = torch.tensor(padded, dtype=torch.long, device=DEVICE)
@@ -118,14 +110,14 @@ def build_batch_tensors(batch_pairs, src_vocab, tgt_vocab, special_tokens):
     tgt_input_sequences = []
     tgt_output_sequences = []
     for source_sequences, target_sequences in batch_pairs:
-        src_tokens = [special_tokens[1]] + tokenize_source(source_sequences) + [special_tokens[2]]
+        src_tokens = [SOS_IDX] + tokenize_source(source_sequences) + [EOS_IDX]
         tgt_tokens = tokenize_target(target_sequences)
         src_sequences.append(src_tokens)
-        tgt_input_sequences.append([special_tokens[1]] + tgt_tokens)
-        tgt_output_sequences.append(tgt_tokens + [special_tokens[2]])
-    src_tensor = pad_sequences(src_sequences, src_vocab)
-    tgt_input_tensor = pad_sequences(tgt_input_sequences, tgt_vocab)
-    tgt_output_tensor = pad_sequences(tgt_output_sequences, tgt_vocab)
+        tgt_input_sequences.append([SOS_IDX] + tgt_tokens)
+        tgt_output_sequences.append(tgt_tokens + [EOS_IDX])
+    src_tensor = pad_sequences(src_sequences)
+    tgt_input_tensor = pad_sequences(tgt_input_sequences)
+    tgt_output_tensor = pad_sequences(tgt_output_sequences)
     return src_tensor, tgt_input_tensor, tgt_output_tensor
 
 def build_batches(pairs, batch_size, shuffle=True):
@@ -151,6 +143,29 @@ def prepare_batches(pairs, batch_size, src_vocab, tgt_vocab, special_tokens):
         prepared_batches.append((src_tensor, tgt_input_tensor, tgt_output_tensor))
     return prepared_batches
 
+def src_tensor_to_token(src_tensor, src_vocab, batch_index=0, skip_pad=True) -> str:
+    inverse_vocab = {idx: token for token, idx in src_vocab.items()}
+
+    if src_tensor.dim() == 1:
+        token_ids = src_tensor.detach().cpu().tolist()
+    elif src_tensor.dim() == 2:
+        if batch_index >= src_tensor.size(1):
+            raise IndexError(
+                f"batch_index {batch_index} out of range for batch size {src_tensor.size(1)}"
+            )
+        token_ids = src_tensor[:, batch_index].detach().cpu().tolist()
+    else:
+        raise ValueError(f"expected 1D or 2D tensor, got shape {tuple(src_tensor.shape)}")
+
+    tokens = []
+    for token_id in token_ids:
+        if skip_pad and token_id == PAD_IDX:
+            continue
+        tokens.append(inverse_vocab.get(token_id, "<UNK>"))
+    return " ".join(tokens)
+
+    
+
 def align_logits_to_target(logits, target_tensor):
     if logits.size(0) < target_tensor.size(0):
         pad_len = target_tensor.size(0) - logits.size(0)
@@ -172,11 +187,11 @@ def main():
     train_batches = prepare_batches(pairs, BATCH_SIZE, src_vocab, tgt_vocab, special_tokens)
 
     criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-    epochs = 30
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+    epochs = 100
     progress = tqdm(range(epochs), desc="Training")
 
-
+    
     for _ in progress:
         model.train()
         epoch_loss = 0.0
@@ -194,38 +209,53 @@ def main():
             optimizer.step()
             epoch_loss += loss.item()
         
+        
         progress.set_postfix(loss=f"{epoch_loss / len(epoch_batches):.6f}")
-
+        print("")
+        print(f"epoch_loss: {epoch_loss / len(epoch_batches):.6f}")
+    
 
     model.eval()
-    inference_avg_loss = 0.0
-    inference_count = 0
+    eval_avg_loss = 0.0
+    eval_count = 0
     with torch.no_grad():
-        test_progress = tqdm(test_pairs, desc="Testing")
-        for test_pair in test_progress:
+        for test_pair in test_pairs[:20]:
             source_sequences, target_sequences = test_pair
-            
-            src_seq = [special_tokens[1]] + tokenize_source(source_sequences) + [special_tokens[2]]
-            tgt_output_seq = tokenize_target(target_sequences) + [special_tokens[2]]
 
-            src_tensor = get_tensor(src_seq, src_vocab)
-            tgt_output_tensor = get_tensor(tgt_output_seq, tgt_vocab)
-            logits = model.inference(
-                src_tensor,
-                max_len=max(len(src_seq) + 5, len(tgt_output_seq)),
-            )
-            logits = align_logits_to_target(logits, tgt_output_tensor)
-            output = logits.argmax(dim=-1).reshape(-1).tolist()
-            output_tokens = [index_to_token(index, tgt_vocab) for index in output]
-            inference_loss = criterion(
-                logits.reshape(-1, logits.size(-1)),
+            src_seq = [SOS_IDX] + tokenize_source(source_sequences) + [EOS_IDX]
+            tgt_tokens = tokenize_target(target_sequences)
+            tgt_output_idx_list = tgt_tokens + [EOS_IDX]
+            tgt_input_idx_list = [SOS_IDX] + tgt_tokens
+
+            src_tensor = get_tensor(src_seq)
+            tgt_input_tensor = get_tensor(tgt_input_idx_list)
+            tgt_output_tensor = get_tensor(tgt_output_idx_list)
+
+            eval_logits = model(src_tensor, tgt_input_tensor)
+            eval_loss = criterion(
+                eval_logits.reshape(-1, eval_logits.size(-1)),
                 tgt_output_tensor.reshape(-1),
             )
-            inference_avg_loss += inference_loss.item()
-            inference_count += 1
-            progress.set_postfix(loss=f"{inference_loss.item():.6f}")
-        
-    print(f"inference_avg_loss: {inference_avg_loss/inference_count:.6f}")
+            eval_avg_loss += eval_loss.item()
+            eval_count += 1
+
+            inf_logits = model.inference(
+                src_tensor,
+                max_len=len(tgt_output_idx_list) + 5,
+            )
+            inf_len = min(inf_logits.size(0), len(tgt_output_idx_list))
+            inf_output = inf_logits[:inf_len].argmax(dim=-1).reshape(-1).tolist()
+            output_tokens = idx_list_to_token_target(inf_output)
+
+            expect_tokens = idx_list_to_token_target(tgt_output_idx_list)
+            exact_match = "✅" if inf_output[:inf_len] == tgt_output_idx_list[:inf_len] else " "
+            print("")
+            print(f"{exact_match} input: {idx_list_to_token_source(src_seq)}")
+            print(f"   output: {output_tokens}")
+            print(f"   expect: {expect_tokens}")
+            print(f"   tf_loss: {eval_loss.item():.6f}")
+
+    print(f"eval_avg_loss (teacher-forcing): {eval_avg_loss / eval_count:.6f}")
 
 if __name__ == "__main__":
     main()

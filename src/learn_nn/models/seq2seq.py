@@ -4,8 +4,8 @@ import random
 import torch
 from torch import nn
 from tqdm import tqdm
-
-from train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX, get_dataset, tokenize_source, tokenize_target, idx_list_to_token_source, idx_list_to_token_target
+from learn_nn.models._utils_ import log_output_line, save_model
+from learn_nn.train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX, get_dataset, tokenize_source, tokenize_target, idx_list_to_token_source, idx_list_to_token_target
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 print("cuda available: ", torch.cuda.is_available(), torch.version.cuda)
@@ -16,18 +16,14 @@ TRAIN_LIMIT = 5000
 TEST_LIMIT = 50
 BATCH_SIZE = 32
    
-HIDDEN_SIZE = 128
-EMBED_SIZE = 64
 
-  
-   
-
+EMBED_SIZE = 256
 
 class Encoder(nn.Module):
     def __init__(self, src_vocab):
         super().__init__()
         self.embedding = nn.Embedding(len(src_vocab), EMBED_SIZE)
-        self.rnn = nn.GRU(EMBED_SIZE, HIDDEN_SIZE, batch_first=False)
+        self.rnn = nn.GRU(EMBED_SIZE, EMBED_SIZE, batch_first=False)
 
     def forward(self, src):
         embedded = self.embedding(src)
@@ -36,12 +32,44 @@ class Encoder(nn.Module):
         _, hidden = self.rnn(embedded)
         return hidden
 
+
+class ReserveEncoder(nn.Module):
+    def __init__(self, src_vocab):
+        super().__init__()
+        self.embedding = nn.Embedding(len(src_vocab), EMBED_SIZE)
+        # 双向 2 层 GRU：每个位置都能同时看过去和未来的上下文
+        # 注：为了简化，保持 num_layers=1、bidirectional=True，后续加层再扩
+        self.rnn = nn.GRU(
+            EMBED_SIZE,
+            EMBED_SIZE,
+            num_layers=1,
+            bidirectional=True,
+            batch_first=False,
+        )
+        # 双向 GRU 返回的 hidden 形状是 [2*num_layers, B, H]
+        # 把 2*H 投影回 H，保证 Decoder 侧接口不变
+        self.hidden_proj = nn.Linear(2 * EMBED_SIZE, EMBED_SIZE)
+
+    def forward(self, src):
+        embedded = self.embedding(src)
+        # outputs: [T, B, 2*H]   每个时刻的前/后向 hidden 拼接
+        # hidden:  [2*num_layers, B, H]
+        outputs, hidden = self.rnn(embedded)
+        # hidden 的 0 号 dim 顺序是 [layer0_fwd, layer0_bwd]
+        # 把同一层两个方向沿最后一维拼接 -> [B, 2*H]，再投影 -> [B, H]
+        fwd = hidden[0]   # [B, H]
+        bwd = hidden[1]   # [B, H]
+        merged = torch.cat([fwd, bwd], dim=-1)   # [B, 2H]
+        hidden = torch.tanh(self.hidden_proj(merged)).unsqueeze(0)   # [1, B, H]
+        return hidden
+
 class Decoder(nn.Module):
     def __init__(self, tgt_vocab):
         super().__init__()
         self.embedding = nn.Embedding(len(tgt_vocab), EMBED_SIZE)
-        self.rnn = nn.GRU(EMBED_SIZE, HIDDEN_SIZE, batch_first=False)
-        self.linear = nn.Linear(HIDDEN_SIZE, len(tgt_vocab))
+        self.rnn = nn.GRU(EMBED_SIZE, EMBED_SIZE, batch_first=False)
+        self.linear = nn.Linear(EMBED_SIZE, len(tgt_vocab))
+        self.linear.weight = self.embedding.weight
     
     def forward(self, tgt_input, hidden):
         embedded = self.embedding(tgt_input)
@@ -54,8 +82,10 @@ class Seq2SeqModel(nn.Module):
         super().__init__()
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
-        self.encoder = Encoder(src_vocab)
-        self.decoder = Decoder(tgt_vocab)
+        self.encoder: Encoder = Encoder(src_vocab)
+        # self.encoder: Encoder = ReserveEncoder(src_vocab)
+        self.decoder: Decoder = Decoder(tgt_vocab)
+        
 
     def forward(self, src, tgt_input):
         hidden = self.encoder(src)
@@ -186,12 +216,15 @@ def main():
 
     train_batches = prepare_batches(pairs, BATCH_SIZE, src_vocab, tgt_vocab, special_tokens)
 
-    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+    criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=0.1)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
     epochs = 100
     progress = tqdm(range(epochs), desc="Training")
 
-    
+    log_output_line(f"=========== Train Meta: ===========")
+    log_output_line(f"EMBED_SIZE: {EMBED_SIZE} | BATCH_SIZE: {BATCH_SIZE} | EPOCHS: {epochs}")
+    log_output_line(f"TRAINING_PAIRS_LEN: {len(pairs)} | TEST_PAIRS_LEN: {len(test_pairs)}")
+    log_output_line(f"=========== Train Meta End: ===========")
     for _ in progress:
         model.train()
         epoch_loss = 0.0
@@ -211,15 +244,16 @@ def main():
         
         
         progress.set_postfix(loss=f"{epoch_loss / len(epoch_batches):.6f}")
-        print("")
-        print(f"epoch_loss: {epoch_loss / len(epoch_batches):.6f}")
+        # print("")
+        # print(f"epoch_loss: {epoch_loss / len(epoch_batches):.6f}")
     
 
     model.eval()
+    save_model(model)
     eval_avg_loss = 0.0
     eval_count = 0
     with torch.no_grad():
-        for test_pair in test_pairs[:20]:
+        for index, test_pair in enumerate(test_pairs):
             source_sequences, target_sequences = test_pair
 
             src_seq = [SOS_IDX] + tokenize_source(source_sequences) + [EOS_IDX]
@@ -249,13 +283,10 @@ def main():
 
             expect_tokens = idx_list_to_token_target(tgt_output_idx_list)
             exact_match = "✅" if inf_output[:inf_len] == tgt_output_idx_list[:inf_len] else " "
-            print("")
-            print(f"{exact_match} input: {idx_list_to_token_source(src_seq)}")
-            print(f"   output: {output_tokens}")
-            print(f"   expect: {expect_tokens}")
-            print(f"   tf_loss: {eval_loss.item():.6f}")
+            log_output_line(f"{exact_match}input: {idx_list_to_token_source(src_seq)} | tf_loss: {eval_loss.item():.6f}")
+            log_output_line(f" === output: {output_tokens} | expect: {expect_tokens}==")
 
-    print(f"eval_avg_loss (teacher-forcing): {eval_avg_loss / eval_count:.6f}")
+    log_output_line(f"eval_avg_loss (teacher-forcing): {eval_avg_loss / eval_count:.6f}")
 
 if __name__ == "__main__":
     main()

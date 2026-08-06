@@ -1,8 +1,9 @@
-import re
 from pathlib import Path
 
+from learn_nn.train_datasets._utils_ import split_eng_word, split_zh_word
+
 FOLDER_PATH = Path(__file__).resolve().parent
-FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_sorted.tsv"
+FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_sorted_simple.tsv"
 
 PAD_TOKEN = "<PAD>"
 PAD_IDX = 0
@@ -30,10 +31,7 @@ _src_vocab_idx = {PAD_IDX: PAD_TOKEN, SOS_IDX: SOS_TOKEN, EOS_IDX: EOS_TOKEN, UN
 _tgt_vocab = {PAD_TOKEN: PAD_IDX, SOS_TOKEN: SOS_IDX, EOS_TOKEN: EOS_IDX, UNK_TOKEN: UNK_IDX}
 _tgt_vocab_idx = {PAD_IDX: PAD_TOKEN, SOS_IDX: SOS_TOKEN, EOS_IDX: EOS_TOKEN, UNK_IDX: UNK_TOKEN}
 
-def split_eng_word(sentence: str) -> list[str]:
-    return re.findall(r'[^\s.,!?;:"()\[\]{}\-&]+|[.,!?;:"()\[\]{}\-&]|\s', sentence)
-def split_zh_word(sentence: str) -> list[str]:
-    return list(sentence)
+
 
 # 英文字符串转token列表
 def tokenize_source(sentence: str)-> list[int]:
@@ -62,7 +60,7 @@ def build_vocab(pairs: list[tuple[str, str]]):
                 _idx = len(_src_vocab)
                 _src_vocab[src_token] = _idx
                 _src_vocab_idx[_idx] = src_token
-        for tgt_token in tgt.strip():
+        for tgt_token in split_zh_word(tgt):
             if tgt_token not in _tgt_vocab:
                 _idx = len(_tgt_vocab)
                 _tgt_vocab[tgt_token] = _idx
@@ -74,7 +72,8 @@ def build_vocab(pairs: list[tuple[str, str]]):
 def build_pairs():
     lines = read_file(FILE_PATH)
     _split_idx = 10
-    _filter_len = 6
+    _filter_len_min = 0
+    _filter_len_max = 9999999
     test_pair_ratio = 10
 
     def _english_word_count(line: str) -> int:
@@ -84,7 +83,8 @@ def build_pairs():
     _index = 0
     for line in lines:
         line = line.split('\t')
-        if _english_word_count(line[0]) > _filter_len:
+        _count = _english_word_count(line[0])
+        if _filter_len_min > _count or _filter_len_max < _count:
             continue
         if _index%test_pair_ratio == 0:
             _test_pairs.append((line[0].lower(), line[1]))
@@ -113,6 +113,7 @@ def test():
 
             tgt_sentence = pair[1]
             idx_list_tgt = tokenize_target(tgt_sentence)
+            print('====')
             print("t -> i: ", tgt_sentence, ' -> ', idx_list_tgt)
             print("i -> t: ", idx_list_tgt, ' -> ', idx_list_to_token_target(idx_list_tgt))
             

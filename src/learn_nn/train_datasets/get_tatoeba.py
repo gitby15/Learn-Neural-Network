@@ -73,7 +73,7 @@ def build_pairs():
     lines = read_file(FILE_PATH)
     _split_idx = 10
     _filter_len_min = 0
-    _filter_len_max = 9999999
+    _filter_len_max = 6666
     test_pair_ratio = 10
 
     def _english_word_count(line: str) -> int:

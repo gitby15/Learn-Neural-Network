@@ -1,11 +1,12 @@
-from learn_nn.train_datasets._utils_ import split_eng_word, split_zh_word
+from learn_nn.train_datasets._utils_ import split_eng_word, fullwidth_to_halfwidth
 from pathlib import Path
 
 
 
 
-
+# 不用的时候注释掉，让脚本跑不动，避免误操作数据集
 FOLDER_PATH = Path(__file__).resolve().parent
+
 FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_tgt.tsv"
 SORTED_FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_sorted.tsv"
 SIMPLE_SORTED_FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_sorted_simple.tsv"
@@ -46,6 +47,7 @@ def convert_to_simple():
     for line in lines:
         line = line.split('\t')
         simple_zh_sentence = convert(line[1], 'zh-cn')
+        simple_zh_sentence = fullwidth_to_halfwidth(simple_zh_sentence)
         line[1] = simple_zh_sentence
         line = '\t'.join(line)
         _lines.append(line)

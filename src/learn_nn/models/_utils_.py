@@ -9,6 +9,9 @@ LOG_FILE_PATH = FOLDER_PATH / "temp" / f"{_prefix}_log.txt"
 MODEL_FILE_PATH = FOLDER_PATH / "temp" / f"{_prefix}_model.pth"
 print(f"== LOG START, LOG FILE: {LOG_FILE_PATH} ==")
 
+INFERENCE_START_TAG = '=============INFERENCE_START============='
+INFERENCE_END_TAG = '=============INFERENCE_END============='
+
 def _append_file(line: str):
     LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE_PATH, "a", encoding="utf-8") as f:

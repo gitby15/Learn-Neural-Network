@@ -69,11 +69,10 @@ def build_vocab(pairs: list[tuple[str, str]]):
     print(f"build vocab done, src_vocab len: {len(_src_vocab)}, tgt_vocab len: {len(_tgt_vocab)}")
     print(f"build vocab idx done, src_vocab_idx len: {len(_src_vocab_idx)}, tgt_vocab_idx len: {len(_tgt_vocab_idx)}")
 
-def build_pairs():
+def build_pairs(min_len, max_len):
     lines = read_file(FILE_PATH)
-    _split_idx = 10
-    _filter_len_min = 0
-    _filter_len_max = 6666
+    _filter_len_min = min_len
+    _filter_len_max = max_len
     test_pair_ratio = 10
 
     def _english_word_count(line: str) -> int:
@@ -97,14 +96,13 @@ def build_pairs():
     build_vocab(_tarin_pairs + _test_pairs)
 
 
-def get_dataset():
-    build_pairs()
-    _special_tokens = [PAD_TOKEN, SOS_TOKEN, EOS_TOKEN, UNK_TOKEN]
-    return _tarin_pairs, _test_pairs, _src_vocab, _tgt_vocab, _special_tokens
+def get_dataset(min_len=0, max_len=9999):
+    build_pairs(min_len, max_len)
+    return _tarin_pairs, _test_pairs, _src_vocab, _tgt_vocab
 
 
 def test():
-    pairs, test_pairs, src_vocab, tgt_vocab, special_tokens = get_dataset()
+    pairs, test_pairs, src_vocab, tgt_vocab = get_dataset()
     for pair in pairs:
             # src_sentence = pair[0]
             # idx_list = tokenize_source(src_sentence)

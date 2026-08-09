@@ -79,8 +79,8 @@ def build_pairs(min_len, max_len):
         parts = split_eng_word(line)
         return len(parts)
 
-    _index = 0
-    for line in lines:
+    
+    for _index, line in enumerate(lines):
         line = line.split('\t')
         _count = _english_word_count(line[0])
         if _filter_len_min > _count or _filter_len_max < _count:

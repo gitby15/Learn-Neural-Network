@@ -18,24 +18,22 @@ from learn_nn.models._utils_ import (
 BATCH_SIZE = 32
 
 
+def target_ids_to_eval_text(idx_list: list[int]) -> str:
+    normalized_ids: list[int] = []
+    for idx in idx_list:
+        if idx == EOS_IDX:
+            break
+        if idx not in {PAD_IDX, SOS_IDX}:
+            normalized_ids.append(idx)
+    return idx_list_to_token_target(normalized_ids)
+
+
 def chrf_score(
-    pred_idx_list: list[int],
-    ref_idx_list: list[int],
+    pred_text: str,
+    ref_text: str,
     max_order: int = 6,
     beta: float = 2.0,
-) -> float:
-    """字符级 n-gram F-score（chrF）。输入是预测/参考的 token id list。"""
-
-    def normalize_target_idx_list(idx_list: list[int]) -> list[int]:
-        special = {PAD_IDX, SOS_IDX, EOS_IDX}
-        return [idx for idx in idx_list if idx not in special]
-
-
-    def target_idx_to_text(idx_list: list[int]) -> str:
-        return idx_list_to_token_target(normalize_target_idx_list(idx_list))
-
-    pred_text = target_idx_to_text(pred_idx_list)
-    ref_text = target_idx_to_text(ref_idx_list)
+) -> float:    
 
     if not pred_text and not ref_text:
         return 1.0
@@ -80,9 +78,6 @@ def chrf_score(
 
 class TensorHandler:
 
-    # --------------------------------------------------------
-    # Level 2: idx_list → 单条 Tensor（给 EvaluateWorker 逐行推理用）
-    # --------------------------------------------------------
     @staticmethod
     def src_idx_to_train_tensor(src_idx_list: list[int]) -> torch.Tensor:
         """给单条推理用: [SOS] + idx + [EOS] → 形状 [T, 1]"""
@@ -97,9 +92,6 @@ class TensorHandler:
         tensor = torch.tensor(seq, dtype=torch.long, device=get_device())
         return tensor.unsqueeze(1)
 
-    # --------------------------------------------------------
-    # Level 3: idx_pair_batch → 批量 Tensor（给 TrainWorker 用）
-    # --------------------------------------------------------
     @staticmethod
     def _pad_sequences(sequences: list[list[int]]) -> torch.Tensor:
         max_len = max(len(s) for s in sequences)
@@ -128,9 +120,6 @@ class TensorHandler:
             TensorHandler._pad_sequences(tgt_out_seqs),
         )
 
-    # --------------------------------------------------------
-    # 完整入口: 字符串 pairs → 所有训练 batches（给 TrainWorker 用）
-    # --------------------------------------------------------
     @staticmethod
     def pairs_to_batches(
         train_pairs: list[tuple[str, str]],
@@ -158,16 +147,13 @@ class TensorHandler:
         return result
 
 
-# ============================================================
-# TrainWorker
-# 要求1: 输入的 pair 都是字符串
-# ============================================================
+
 class TrainWorker:
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, epochs:int = 10):
         self.model = model
         _device = get_device()
         self.model.to(_device)
-        self.epochs: int = 20
+        self.epochs: int = epochs
 
     def train(self, train_pairs: list[tuple[str, str]]) -> None:
         """
@@ -178,7 +164,9 @@ class TrainWorker:
         batches = TensorHandler.pairs_to_batches(train_pairs)
         epoch_batches = list(batches)
         criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=0.05)
+
         optimizer = torch.optim.Adam(_model.parameters(), lr=0.001)
+
         progress = tqdm(range(self.epochs), desc="Training")
 
          # ===== 打印元信息 =====
@@ -207,17 +195,15 @@ class TrainWorker:
             avg = epoch_loss / max(1, len(epoch_batches))
             progress.set_postfix(loss=f"{avg:.6f}")
             log_output_line(f"Idx: {idx} | Training Loss: {avg:.6f}")
+        log_output_line(f"Training Meta: {progress}")
 
 
-# ============================================================
-# EvaluateWorker
-# 1. 输入的 pair 都是字符串
-# 2. test 是一行一行去 test, 不是 batch
-# 4. 支持 chrF 评分
-# ============================================================
 class EvaluateWorker:
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, name: str = "model"):
         self.model = model
+        self.name = name
+        self.model = model
+        
         _device = get_device()
         self.model.to(_device)
 
@@ -226,48 +212,32 @@ class EvaluateWorker:
         test_pairs: list[tuple[str, str]],
         max_len_margin: int = 10,
     ) -> tuple[float, list[tuple[str, str, str, float]]]:
-        """
-        1. test_pairs 每个元素都是 (src_str, tgt_str), 纯字符串
-        2. 逐行推理, 不做batch
-        4. 对每条预测计算 chrF, 并返回平均值 + 详情
-
-        返回: 
-            avg_chrf: float               整个测试集的平均chrF
-            results:  list[tuple[
-                src_text: str,   # 源句（清洗后token）
-                pred_text: str,  # 预测句
-                ref_text: str,   # 参考句
-                chrf: float,     # 该条chrF
-            ]]
-        """
         _model = self.model
         total_chrf = 0.0
         results: list[tuple[str, str, str, float]] = []
 
         with torch.no_grad():
-            log_output_line(INFERENCE_START_TAG)
-            pair_iter = tqdm(test_pairs, desc="Evaluating (row-by-row)")
+            log_output_line(f"{INFERENCE_START_TAG}\t{self.name}")
+            pair_iter = tqdm(test_pairs, desc=f"Evaluating (row-by-row)")
             for src_str, ref_str in pair_iter:
                 # ----- 字符串 → idx → 单条 tensor -----
                 src_idx = tokenize_source(src_str)
                 ref_idx = tokenize_target(ref_str)
-                ref_with_eos = list(ref_idx) + [EOS_IDX]
                 src_tensor = TensorHandler.src_idx_to_train_tensor(src_idx)
 
                 # ----- 自回归逐行推理（不是 teacher forcing！）-----
-                expected_len = len(ref_with_eos)
-                max_len = max(expected_len + max_len_margin, 4)
+                max_len = max(src_tensor.size(0) * 2 + max_len_margin, 4)
                 inf_logits = _model.inference(src_tensor, max_len=max_len)
                 pred_idx = inf_logits.argmax(dim=-1).reshape(-1).tolist()
 
                 # ----- idx → 文本 -----
                 full_src_idx = [SOS_IDX] + list(src_idx) + [EOS_IDX]
                 src_text = idx_list_to_token_source(full_src_idx)
-                pred_text = idx_list_to_token_target(pred_idx)
-                ref_text = idx_list_to_token_target(ref_with_eos)
+                pred_text = target_ids_to_eval_text(pred_idx)
+                ref_text = target_ids_to_eval_text(ref_idx)
 
                 # ----- 计算 chrF -----
-                score = chrf_score(pred_idx, ref_with_eos)
+                score = chrf_score(pred_text, ref_text)
                 total_chrf += score
                 results.append((src_text, pred_text, ref_text, score))
 
@@ -275,9 +245,9 @@ class EvaluateWorker:
                 log_output_line(
                     f"【chrF: {score:.4f}】\t[{src_text}]\t[{pred_text}]\t[{ref_text}]"
                 )
-            log_output_line(INFERENCE_END_TAG)
+            log_output_line(f"{INFERENCE_END_TAG}\t{self.name}")
 
             avg_chrf = total_chrf / max(1, len(test_pairs))
-            log_output_line(f"eval_avg_chrf: {avg_chrf:.6f}")
+            log_output_line(f"{self.name}\teval_avg_chrf: {avg_chrf:.6f}")
 
         return avg_chrf, results

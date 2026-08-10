@@ -5,8 +5,8 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from learn_nn.train_datasets.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX
 
 
-SRC_EMBED_SIZE = 256
-EMBED_SIZE = 512
+SRC_EMBED_SIZE = 512
+EMBED_SIZE = 256
 
 class Encoder(nn.Module):
     def __init__(self, src_vocab):
@@ -44,14 +44,17 @@ class Decoder(nn.Module):
             _input_size,
             padding_idx=PAD_IDX,
         )
+        
+        if self.use_attention:
+            self.attention_proj = nn.Linear(2 * _hidden_size, _hidden_size)
+        
         self.rnn = nn.GRU(_input_size, _hidden_size, batch_first=False)
-        self.attention_proj = nn.Linear(2 * _hidden_size, _hidden_size)
         self.linear = nn.Linear(_hidden_size, len(tgt_vocab))
         self.linear.weight = self.embedding.weight
     
-     # 输入Q和K，计算出V
+    # 输入Q和K，计算出V
     # 探索使用不同的数据作为Q和K，观测一下效果
-    def get_attention_hidden(
+    def get_attention_context(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
@@ -82,13 +85,7 @@ class Decoder(nn.Module):
             attention_weights,
             key,
         )
-        output = torch.tanh(
-            self.attention_proj(
-                torch.cat([query, context], dim=-1)
-            )
-        )
-
-        return output, output[-1:]
+        return context
 
 
     def forward(self, tgt_input, previous_hidden, encoder_outputs, src_mask):
@@ -97,25 +94,18 @@ class Decoder(nn.Module):
         # B: Batch Size， 在RNN场景中也是可以不固定的
         # H: Embedding Size, 这个尺寸要一开始设置好，跟词表规模对应
         embedded = self.embedding(tgt_input)
-        if self.use_attention:
-            previous_hidden, _ = self.get_attention_hidden(
-                previous_hidden,
-                encoder_outputs,
-                src_mask,
-            )
+
         _hidden = previous_hidden
+
+        if self.use_attention:
+            attention = self.get_attention_context(_hidden, encoder_outputs, src_mask)
+            _hidden = torch.tanh(
+                self.attention_proj(torch.cat((_hidden, attention), dim=-1))
+            )
+
         
         decoder_output, decoder_hidden = self.rnn(embedded, _hidden)
 
-        if self.use_attention:
-            decoder_output, decoder_hidden = self.get_attention_hidden(
-                decoder_output,
-                encoder_outputs,
-                src_mask,
-            )
-        
-        # previous_hidden的形状是1, B, H
-        
         logits = self.linear(decoder_output)
         return logits, decoder_hidden
 
@@ -131,8 +121,11 @@ class Seq2SeqModel(nn.Module):
     def forward(self, src, tgt_input):
         outputs, hidden = self.encoder(src)
         src_mask = src.transpose(0, 1).ne(PAD_IDX)
-        logits, _ = self.decoder(tgt_input, hidden, outputs, src_mask)
-        return logits
+        batch_logits_steps = []
+        for word_batch in tgt_input.split(1, dim=0):
+            logits, hidden = self.decoder(word_batch, hidden, outputs, src_mask)
+            batch_logits_steps.append(logits)
+        return torch.cat(batch_logits_steps, dim=0)
 
     def inference(self, src, max_len):
         outputs, hidden = self.encoder(src)

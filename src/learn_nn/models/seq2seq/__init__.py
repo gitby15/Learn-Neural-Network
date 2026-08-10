@@ -6,9 +6,11 @@ from learn_nn.models._utils_ import (
     log_output_line,
     save_model,
 )
+import random
+random.seed(88)
 
 EPOCHS = 50
-DATA_TOKEN_MAX_LEN = 6
+DATA_TOKEN_MAX_LEN = 66666
 
 def main():
     pairs, test_pairs, src_vocab, tgt_vocab = get_dataset(min_len=0, max_len=DATA_TOKEN_MAX_LEN)

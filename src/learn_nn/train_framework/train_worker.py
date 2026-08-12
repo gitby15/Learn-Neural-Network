@@ -3,15 +3,15 @@ import random
 import torch
 from torch import nn
 from tqdm import tqdm
-from learn_nn.models._utils_ import get_device
-from learn_nn.train_datasets.get_tatoeba import (
+from learn_nn.train_framework._utils_ import get_device
+from learn_nn.train_framework.dataset.get_tatoeba import (
     EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX,
     get_dataset,
     tokenize_source, tokenize_target,
     idx_list_to_token_source, idx_list_to_token_target,
 )
-from learn_nn.models._utils_ import (
-    log_output_line, save_model,
+from learn_nn.train_framework._utils_ import (
+    log_output_line,
     INFERENCE_START_TAG, INFERENCE_END_TAG,
 )
 
@@ -202,7 +202,6 @@ class EvaluateWorker:
     def __init__(self, model: nn.Module, name: str = "model"):
         self.model = model
         self.name = name
-        self.model = model
         
         _device = get_device()
         self.model.to(_device)
@@ -225,9 +224,7 @@ class EvaluateWorker:
                 ref_idx = tokenize_target(ref_str)
                 src_tensor = TensorHandler.src_idx_to_train_tensor(src_idx)
 
-                # ----- 自回归逐行推理（不是 teacher forcing！）-----
-                max_len = max(src_tensor.size(0) * 2 + max_len_margin, 4)
-                inf_logits = _model.inference(src_tensor, max_len=max_len)
+                inf_logits = _model(src_tensor)
                 pred_idx = inf_logits.argmax(dim=-1).reshape(-1).tolist()
 
                 # ----- idx → 文本 -----
@@ -245,6 +242,8 @@ class EvaluateWorker:
                 log_output_line(
                     f"【chrF: {score:.4f}】\t[{src_text}]\t[{pred_text}]\t[{ref_text}]"
                 )
+                avg_chrf = total_chrf / max(1, len(test_pairs))
+                pair_iter.set_postfix(chrf=f"avg_chrf: {avg_chrf:.6f}")
             log_output_line(f"{INFERENCE_END_TAG}\t{self.name}")
 
             avg_chrf = total_chrf / max(1, len(test_pairs))

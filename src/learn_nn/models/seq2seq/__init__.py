@@ -1,16 +1,19 @@
 
-from learn_nn.models.seq2seq._train_ import TrainWorker, EvaluateWorker, TensorHandler, chrf_score
-from learn_nn.models.seq2seq._model_ import Seq2SeqModel
-from learn_nn.train_datasets.get_tatoeba import get_dataset
-from learn_nn.models._utils_ import (
-    log_output_line,
-    save_model,
-)
+from learn_nn.train_framework import TrainWorker, EvaluateWorker, get_dataset,log_output_line
+from learn_nn.models.seq2seq.model import Seq2SeqModel
+
 import random
-random.seed(88)
+import torch
+import numpy as np
+_SEED_ = 88
+random.seed(_SEED_)
+torch.manual_seed(_SEED_)
+torch.cuda.manual_seed_all(_SEED_)
+np.random.seed(_SEED_)
 
 EPOCHS = 50
-DATA_TOKEN_MAX_LEN = 66666
+DATA_TOKEN_MAX_LEN = 6
+
 
 def main():
     pairs, test_pairs, src_vocab, tgt_vocab = get_dataset(min_len=0, max_len=DATA_TOKEN_MAX_LEN)

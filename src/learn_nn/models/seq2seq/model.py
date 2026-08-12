@@ -6,18 +6,32 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from learn_nn.train_framework.dataset.get_tatoeba import EOS_IDX, PAD_IDX, SOS_IDX
 
 
-SRC_EMBED_SIZE = 128
-EMBED_SIZE = 64
+def _calculate_src_embed_size(src_vocab):
+    _len = len(src_vocab)
+    if _len < 5000:
+        return 128
+    elif _len < 10000:
+        return 256
+    return 512
+def _calculate_tgt_embed_size(tgt_vocab):
+    _len = len(tgt_vocab)
+    if _len < 5000:
+        return 128
+    elif _len < 10000:
+        return 256
+    return 512
 
 class Encoder(nn.Module):
-    def __init__(self, src_vocab):
+    def __init__(self, src_vocab, tgt_vocab):
         super().__init__()
+        _src_embed_size = _calculate_src_embed_size(src_vocab)
+        _tgt_embed_size = _calculate_tgt_embed_size(tgt_vocab)
         self.embedding = nn.Embedding(
             len(src_vocab),
-            SRC_EMBED_SIZE,
+            _src_embed_size,
             padding_idx=PAD_IDX,
         )
-        self.rnn = nn.GRU(SRC_EMBED_SIZE, EMBED_SIZE, batch_first=False)
+        self.rnn = nn.GRU(_src_embed_size, _tgt_embed_size, batch_first=False)
 
     def forward(self, src):
         lengths = src.ne(PAD_IDX).sum(dim=0).cpu()
@@ -37,8 +51,8 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, tgt_vocab, use_attention: bool = False):
         super().__init__()
-        _input_size = EMBED_SIZE
-        _hidden_size = EMBED_SIZE
+        _input_size = _calculate_tgt_embed_size(tgt_vocab)
+        _hidden_size = _input_size
         self.use_attention = use_attention
         self.embedding = nn.Embedding(
             len(tgt_vocab),
@@ -105,7 +119,7 @@ class Decoder(nn.Module):
             decoder_output = torch.tanh(
                 self.attention_proj(torch.cat((decoder_output, attention), dim=-1))
             )
-            decoder_hidden = decoder_output[-1:]
+            # decoder_hidden = decoder_output[-1:]
 
         logits = self.linear(decoder_output)
         return logits, decoder_hidden
@@ -115,7 +129,7 @@ class Seq2SeqModel(nn.Module):
         super().__init__()
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
-        self.encoder: Encoder = Encoder(src_vocab)
+        self.encoder: Encoder = Encoder(src_vocab, tgt_vocab)
         self.decoder: Decoder = Decoder(tgt_vocab, use_attention=use_attention)
         
 

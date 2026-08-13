@@ -26,6 +26,7 @@ def save_model(model: nn.Module):
     MODEL_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), MODEL_FILE_PATH)
 
+
 def get_device():
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     return DEVICE

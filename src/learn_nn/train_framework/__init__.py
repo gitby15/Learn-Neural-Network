@@ -8,6 +8,7 @@ from learn_nn.train_framework.train_worker import (
 from learn_nn.train_framework.dataset.get_tatoeba import get_dataset
 from learn_nn.train_framework._utils_ import (
     log_output_line,
+    get_device
 )
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "chrf_score",
     "get_dataset",
     "log_output_line",
+    "get_device",
 ]
 
 

@@ -26,16 +26,19 @@ class Encoder(nn.Module):
         super().__init__()
         _src_embed_size = _calculate_src_embed_size(src_vocab)
         _tgt_embed_size = _calculate_tgt_embed_size(tgt_vocab)
+        _dropout_rate = 0.1
         self.embedding = nn.Embedding(
             len(src_vocab),
             _src_embed_size,
             padding_idx=PAD_IDX,
         )
         self.rnn = nn.GRU(_src_embed_size, _tgt_embed_size, batch_first=False)
+        self.dropout = nn.Dropout(_dropout_rate)
 
     def forward(self, src):
         lengths = src.ne(PAD_IDX).sum(dim=0).cpu()
         embedded = self.embedding(src)
+        embedded = self.dropout(embedded)
         packed = pack_padded_sequence(
             embedded,
             lengths,
@@ -109,6 +112,7 @@ class Decoder(nn.Module):
         # B: Batch Size， 在RNN场景中也是可以不固定的
         # H: Embedding Size, 这个尺寸要一开始设置好，跟词表规模对应
         embedded = self.embedding(tgt_input)
+        embedded = nn.functional.relu(embedded)
 
         _hidden = previous_hidden
 
@@ -119,7 +123,6 @@ class Decoder(nn.Module):
             decoder_output = torch.tanh(
                 self.attention_proj(torch.cat((decoder_output, attention), dim=-1))
             )
-            # decoder_hidden = decoder_output[-1:]
 
         logits = self.linear(decoder_output)
         return logits, decoder_hidden

@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 from learn_nn.train_framework import get_dataset, TensorHandler
 from learn_nn.models.transformer.base_component import Embeddings, PositionEncoding, MultiHeadAttention, FeedForword, LayerNorm
+from learn_nn.train_framework.dataset.get_tatoeba import PAD_IDX
 
-DROPOUT_RATE = 0.01
+EPS = 1e-6
 
 
 # Transformer Encoder
@@ -16,20 +17,17 @@ class EncoderBlock(nn.Module):
         self.atten_norm_model = LayerNorm()
         self.ff_model = FeedForword()
         self.ff_norm_model = LayerNorm()
-        self.dropout = nn.Dropout(DROPOUT_RATE)
-    def forward(self, x):
+    def forward(self, x, padding_mask=None):
         # 自注意力机制，q,k,v都是自己
         q = k = v = x
-        attention_output = self.attention_model(q,k,v)
+        attention_output = self.attention_model(q,k,v, padding_mask)
         # 归一化 + 残差连接
         attention_norm_output = self.atten_norm_model(attention_output + x)
         # 前馈
         ff_output = self.ff_model(attention_norm_output)
         ff_norm_output = self.ff_norm_model(ff_output + attention_norm_output)
-
-        output = self.dropout(ff_norm_output)
         
-        return output
+        return ff_norm_output
 
 
 
@@ -43,13 +41,18 @@ class TransformerEncoder(nn.Module):
         pass
 
     def forward(self, src):
+
         # 词嵌入
         embedded = self.embedd_model(src)
         pos_embedded = self.pos_embedded(embedded)
         temp_src = pos_embedded
+        # Todo: 处理src mask
+        src_mask = src.ne(PAD_IDX).transpose(0, 1)
+        src_mask = src_mask[:,None, None, :]
+
         # 多个编码块
         for block in self.encoder_blocks:
-            temp_src = block(temp_src)
+            temp_src = block(temp_src, src_mask)
         return temp_src
 
 

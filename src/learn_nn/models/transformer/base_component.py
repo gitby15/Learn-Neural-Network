@@ -6,11 +6,14 @@ import math
  
 HEAD_SIZE = 64
 HEAD_COUNT = 8
+ATTENTION_SIZE = HEAD_COUNT* HEAD_SIZE
 
-EMBED_SIZE = HEAD_COUNT * HEAD_SIZE
+
+EMBED_SIZE = 512
 DROPOUT_RATE = 0.01
 
 MAX_IMPUT_LEN = 512 # 暂定一句话最长只有512个token，诶，有点像LLM的最大上下文长度
+
 
 class Embeddings(nn.Module):
     def __init__(self, src_vocab: list):
@@ -18,19 +21,21 @@ class Embeddings(nn.Module):
         self.src_vocab = src_vocab
         self.vocab_size = len(src_vocab)
         self.embed = nn.Embedding(self.vocab_size, EMBED_SIZE)
+        self._embed_scale_factor = math.sqrt(EMBED_SIZE/2)
+        self.dropout = nn.Dropout(DROPOUT_RATE)
     def forward(self, x):
         output = self.embed(x)
-        # 开一手根号，避免梯度太集中
-        output = output * math.sqrt(EMBED_SIZE)
+        # 将输出乘以一个适当的值，避免后面做位置编码的时候，位置编码的信息浓度太高。
+        # 位置编码的值在[0-1]之间
+        output = output * self._embed_scale_factor
+        output = self.dropout(output)
         return output
 
 # 这一层没有神经网络，只是单纯地给每个位置添加一个位置编码向量
 class PositionEncoding(nn.Module):
     def __init__(self):
         super().__init__()
-        # 防止过拟合
-        self.dropout = nn.Dropout(DROPOUT_RATE)
-
+        
         pe = torch.zeros(MAX_IMPUT_LEN, EMBED_SIZE)
         position = torch.arange(0, MAX_IMPUT_LEN).unsqueeze(1)
 
@@ -40,6 +45,7 @@ class PositionEncoding(nn.Module):
         pe[:, 1::2] = torch.cos(position_value)
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
+        self.dropout = nn.Dropout(DROPOUT_RATE)
     
     # embedd的向量加上位置编码
     def forward(self, x):
@@ -79,18 +85,20 @@ class MultiHeadAttention(nn.Module):
         value = value.view(t_k, b, h, d).permute(1, 2, 0, 3)
 
         # 计算注意力权重: 输出形状 [B, H, T_q, D]
-        attention = F.scaled_dot_product_attention(query, key, value, mask, dropout_p=DROPOUT_RATE)
+        attention = F.scaled_dot_product_attention(query, key, value, mask)
 
         # [B, H, T_q, D] → [B, T_q, H, D] → contiguous → [B, T_q, H*D] → [T_q, B, C]
         attention = attention.transpose(1, 2).contiguous().view(b, t_q, h * d)
         attention = attention.transpose(0, 1)
         output = self.w_o(attention)
+        output = self.dropout(output)
         return output
 
 class FeedForword(nn.Module):
     def __init__(self):
         super().__init__()
-        _middle_size = EMBED_SIZE * 4
+        # 论文上写的是4，这里用2看看效果
+        _middle_size = EMBED_SIZE * 2
         self.input_layer = nn.Linear(EMBED_SIZE, _middle_size)
         self.out_put_layer = nn.Linear(_middle_size, EMBED_SIZE)
         self.dropout = nn.Dropout(DROPOUT_RATE)
@@ -98,25 +106,18 @@ class FeedForword(nn.Module):
     def forward(self, x):
         x = self.input_layer(x)
         x = F.relu(x)
-        x = self.dropout(x)
         x = self.out_put_layer(x)
+        x = self.dropout(x)
         return x
 
 
 class LayerNorm(nn.Module):
     def __init__(self):
         super().__init__()
-        _eps=1e-6
-        
-        
-        self.eps = _eps
-        self.weight = nn.Parameter(torch.ones(EMBED_SIZE))
-        self.bias = nn.Parameter(torch.zeros(EMBED_SIZE))
+        self.norm = nn.LayerNorm(EMBED_SIZE, eps=1e-6)
 
     def forward(self, x):
-        x_mean = x.mean(-1, keepdim=True)
-        x_std = x.std(-1, keepdim=True)
-        output = self.weight * (x - x_mean)/(x_std + self.eps) + self.bias
+        output = self.norm(x)
         return output
 
 
@@ -124,7 +125,9 @@ class FinalOutput(nn.Module):
     def __init__(self, src_vocab, tgt_vocab):
         super().__init__()
         self.linear = nn.Linear(EMBED_SIZE, len(tgt_vocab))
+        self.dropout = nn.Dropout(DROPOUT_RATE)
 
     def forward(self, x):
         output = self.linear(x)
+        output = self.dropout(output)
         return output

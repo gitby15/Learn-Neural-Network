@@ -5,8 +5,6 @@ import math
 from learn_nn.models.transformer.base_component import Embeddings, FinalOutput, PositionEncoding, MultiHeadAttention, FeedForword, LayerNorm
 
 
-DROPOUT_RATE = 0.01
-
 
 class DecoderBlock(nn.Module):
     def __init__(self):
@@ -17,22 +15,24 @@ class DecoderBlock(nn.Module):
         self.atten_norm_model = LayerNorm()
         self.ff_model = FeedForword()
         self.ff_norm_model = LayerNorm()
-        self.dropout = nn.Dropout(DROPOUT_RATE)
-    def forward(self, x, encoder_k, encoder_v, causal_mask=None):
+    def forward(self, decoder_input, encoder_k, encoder_v, causal_mask=None):
         # Todo: 这里的QKV还是自己吗？
-        q = k = v = x
-        masked_attention_output = self.masked_multi_head_attention_model(q,k,v, causal_mask)
-        # 归一化 + 残差连接
-        masked_attention_norm_output = self.masked_atten_norm_model(masked_attention_output + x)
+        q = k = v = decoder_input
 
+        # 对输入进行掩码自注意力
+        masked_attention_output = self.masked_multi_head_attention_model(q,k,v, causal_mask)
+        # 残差连接 + 归一化
+        masked_attention_norm_output = self.masked_atten_norm_model(masked_attention_output + decoder_input)
+
+        # 结合Decoder的输入和Encoder的输出计算注意力
         cross_attention_output = self.cross_attention_model(masked_attention_norm_output, encoder_k, encoder_v)
+        # 残差连接 + 归一化
         cross_attention_norm_output = self.atten_norm_model(cross_attention_output + masked_attention_norm_output)
 
         # 前馈
         ff_output = self.ff_model(cross_attention_norm_output)
         ff_norm_output = self.ff_norm_model(ff_output + cross_attention_norm_output)
-        output = self.dropout(ff_norm_output)
-        return output
+        return ff_norm_output
 
 
 class TransformerDecoder(nn.Module):

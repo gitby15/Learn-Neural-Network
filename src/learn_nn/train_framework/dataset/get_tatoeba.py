@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from learn_nn.train_datasets._utils_ import split_eng_word, split_zh_word
+from learn_nn.train_framework.dataset._utils_ import split_eng_word, split_zh_word
 
 FOLDER_PATH = Path(__file__).resolve().parent
 FILE_PATH = FOLDER_PATH / "tatoeba_en2zh_sorted_simple.tsv"

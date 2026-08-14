@@ -1,4 +1,4 @@
-from learn_nn.train_datasets._utils_ import split_eng_word, fullwidth_to_halfwidth
+from learn_nn.train_framework.dataset._utils_ import split_eng_word, fullwidth_to_halfwidth
 from pathlib import Path
 
 

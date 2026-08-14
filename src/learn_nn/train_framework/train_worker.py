@@ -1,21 +1,25 @@
 import random
+import math
 
 import torch
+import torch.nn.functional as F
 from torch import nn
+from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
-from learn_nn.models._utils_ import get_device
-from learn_nn.train_datasets.get_tatoeba import (
+from learn_nn.train_framework._utils_ import get_device
+from learn_nn.train_framework.dataset.get_tatoeba import (
     EOS_IDX, PAD_IDX, SOS_IDX, UNK_IDX,
     get_dataset,
     tokenize_source, tokenize_target,
     idx_list_to_token_source, idx_list_to_token_target,
 )
-from learn_nn.models._utils_ import (
-    log_output_line, save_model,
+from learn_nn.train_framework._utils_ import (
+    log_output_line,
     INFERENCE_START_TAG, INFERENCE_END_TAG,
 )
 
 BATCH_SIZE = 32
+torch.set_default_device(get_device())
 
 
 def target_ids_to_eval_text(idx_list: list[int]) -> str:
@@ -121,6 +125,13 @@ class TensorHandler:
         )
 
     @staticmethod
+    def src_str_to_tensor(src_str: str) -> torch.Tensor:
+        """给单条推理用: [SOS] + idx + [EOS] → 形状 [T, 1]"""
+        seq = tokenize_source(src_str)
+        tensor = TensorHandler.src_idx_to_train_tensor(seq)
+        return tensor
+
+    @staticmethod
     def pairs_to_batches(
         train_pairs: list[tuple[str, str]],
         batch_size: int = BATCH_SIZE,
@@ -163,9 +174,37 @@ class TrainWorker:
         _model = self.model
         batches = TensorHandler.pairs_to_batches(train_pairs)
         epoch_batches = list(batches)
-        criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX, label_smoothing=0.05)
+        criterion_ce = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
+        # criterion_nl = nn.NLLLoss(ignore_index=PAD_IDX)
 
-        optimizer = torch.optim.Adam(_model.parameters(), lr=0.001)
+        # ---- Transformer 推荐的优化器与学习率调度 ----
+        # 1) 用 AdamW (带 decoupled weight decay) 替代 Adam
+        BASE_LR = 3e-4       # 比 0.001 稍稳一些，可调 1e-4 ~ 5e-4
+        WEIGHT_DECAY = 0.01  # Transformer 标配
+        WARMUP_RATIO = 0.1   # 前 10% steps 做 warmup
+
+        optimizer = torch.optim.AdamW(
+            _model.parameters(),
+            lr=BASE_LR,
+            betas=(0.9, 0.98),   # 原始 Transformer 论文推荐
+            eps=1e-9,
+            weight_decay=WEIGHT_DECAY,
+        )
+
+        # 2) 总训练步数 = epoch 数 * 每 epoch 的 batch 数
+        total_steps = self.epochs * max(1, len(epoch_batches))
+        warmup_steps = int(total_steps * WARMUP_RATIO)
+
+        # 3) 学习率曲线: warmup 线性上升 → cosine 衰减到 0
+        def _lr_lambda(current_step: int) -> float:
+            if current_step < warmup_steps:
+                # warmup: 线性从 0 -> 1 (再乘 BASE_LR 就是实际 lr)
+                return float(current_step) / float(max(1, warmup_steps))
+            # cosine 从 1 衰减到 0
+            progress_step = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(1e-4, 0.5 * (1.0 + math.cos(math.pi * progress_step)))
+
+        scheduler = LambdaLR(optimizer, lr_lambda=_lr_lambda)
 
         progress = tqdm(range(self.epochs), desc="Training")
 
@@ -177,13 +216,15 @@ class TrainWorker:
             f"EPOCHS: {self.epochs}"
         )
         log_output_line("=========== Train Meta End: ===========")
+        global_step = 0
         for idx in progress:
             _model.train()
             epoch_loss = 0.0
             random.shuffle(epoch_batches)
             for src_tensor, tgt_input_tensor, tgt_output_tensor in epoch_batches:
                 logits = _model(src_tensor, tgt_input_tensor)
-                loss = criterion(
+                # 交叉熵损失函数用这个
+                loss = criterion_ce(
                     logits.reshape(-1, logits.size(-1)),
                     tgt_output_tensor.reshape(-1),
                 )
@@ -191,10 +232,14 @@ class TrainWorker:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(_model.parameters(), max_norm=1.0)
                 optimizer.step()
+                # 每个 batch step 更新一次学习率 (step-based 而非 epoch-based)
+                scheduler.step()
+                global_step += 1
                 epoch_loss += loss.item()
             avg = epoch_loss / max(1, len(epoch_batches))
-            progress.set_postfix(loss=f"{avg:.6f}")
-            log_output_line(f"Idx: {idx} | Training Loss: {avg:.6f}")
+            cur_lr = optimizer.param_groups[0]["lr"]
+            progress.set_postfix(loss=f"{avg:.6f}", lr=f"{cur_lr:.2e}")
+            log_output_line(f"Idx: {idx} | Training Loss: {avg:.6f} | lr: {cur_lr:.2e}")
         log_output_line(f"Training Meta: {progress}")
 
 
@@ -202,7 +247,6 @@ class EvaluateWorker:
     def __init__(self, model: nn.Module, name: str = "model"):
         self.model = model
         self.name = name
-        self.model = model
         
         _device = get_device()
         self.model.to(_device)
@@ -225,9 +269,7 @@ class EvaluateWorker:
                 ref_idx = tokenize_target(ref_str)
                 src_tensor = TensorHandler.src_idx_to_train_tensor(src_idx)
 
-                # ----- 自回归逐行推理（不是 teacher forcing！）-----
-                max_len = max(src_tensor.size(0) * 2 + max_len_margin, 4)
-                inf_logits = _model.inference(src_tensor, max_len=max_len)
+                inf_logits = _model(src_tensor)
                 pred_idx = inf_logits.argmax(dim=-1).reshape(-1).tolist()
 
                 # ----- idx → 文本 -----
@@ -245,6 +287,8 @@ class EvaluateWorker:
                 log_output_line(
                     f"【chrF: {score:.4f}】\t[{src_text}]\t[{pred_text}]\t[{ref_text}]"
                 )
+                avg_chrf = total_chrf / max(1, len(test_pairs))
+                pair_iter.set_postfix(chrf=f"avg_chrf: {avg_chrf:.6f}")
             log_output_line(f"{INFERENCE_END_TAG}\t{self.name}")
 
             avg_chrf = total_chrf / max(1, len(test_pairs))

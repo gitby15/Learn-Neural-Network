@@ -13,47 +13,46 @@ class TimTransformer(nn.Module):
         self.decoder = TransformerDecoder(src_vocab, tgt_vocab)
     
 
-    def _teaching_force(self, tgt_input, encoder_output):
-        logits = self.decoder(tgt_input, encoder_output, encoder_output)
+    def _teaching_force(self, tgt_input, encoder_output, src_padding_mask):
+        logits = self.decoder(tgt_input, encoder_output, encoder_output, src_padding_mask=src_padding_mask)
         return logits
 
-    def _self_generation(self, input_token, encoder_output):
+    def _self_generation(self, input_token, encoder_output, src_padding_mask):
         logits = []
         _max_length = 50
         while True:
-            logit = self.decoder(input_token, encoder_output, encoder_output)
-            # 只取最后一个时间步的 logit: [T, B, V] -> [1, B, V]
-            next_logit = logit[-1:, :, :]
+            decoder_output = self.decoder(
+                input_token, encoder_output, encoder_output, src_padding_mask=src_padding_mask
+            )
+            next_logit = decoder_output[:, -1:, :]  # [B, T, V] -> [B, 1, V]
             logits.append(next_logit)
             # 取最后一步的 token 并追加到 input_token 末尾
-            next_token = torch.argmax(next_logit, dim=-1)  # [1, B]
-            input_token = torch.cat([input_token, next_token], dim=0)
+            next_token = torch.argmax(next_logit, dim=-1)  # [B, 1]
+            input_token = torch.cat([input_token, next_token], dim=1)
             # 所有 batch 都生成了 EOS 则停止
             if next_token.eq(EOS_IDX).all():
                 break
             if len(logits) >= _max_length:
                 break
-        # [T_gen, B, V]
-        logits = torch.cat(logits, dim=0)
+        logits = torch.cat(logits, dim=1)  # list[B,1,V] -> [B, T_gen, V]
         return logits
 
-
-
-
     def forward(self, src, tgt_input=None):
-        encoder_output = self.encoder(src)
+        encoder_output, src_padding_mask = self.encoder(src)
         
         logits = None
-        if tgt_input is None:
-            batch_size = src.size(1)
+        if tgt_input is not None:
+            logits = self._teaching_force(tgt_input, encoder_output, src_padding_mask)
+        else:
+            batch_size = src.size(0)
             input_token = torch.full(
-                (1, batch_size),
+                (batch_size, 1),
                 fill_value=SOS_IDX,
                 dtype=torch.long,
+                device=src.device,
             )            
-            logits = self._self_generation(input_token, encoder_output)
-        else:
-            logits = self._teaching_force(tgt_input, encoder_output)
+            logits = self._self_generation(input_token, encoder_output, src_padding_mask)
+            
         return logits
 
 
@@ -65,6 +64,4 @@ class TimTransformer(nn.Module):
 
 
 if __name__ == '__main__':
-    print('model: ', __package__)
-    print(f"Q,K,V: ", query, key, value)
-    pass
+    print(f'model module: {__package__}')

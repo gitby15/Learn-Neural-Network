@@ -47,12 +47,11 @@ class PositionEncoding(nn.Module):
         self.register_buffer('pe', pe)
         self.dropout = nn.Dropout(DROPOUT_RATE)
     
-    # embedd的向量加上位置编码
     def forward(self, x):
-        # x 的形状是 [T, B, C]，所以取 x.size(0) 作为序列长度
-        # self.pe[:, :T] 是 [1, T, C]，转置为 [T, 1, C] 以正确广播到 [T, B, C]
-        x = x + self.pe[:, :x.size(0)].transpose(0, 1)
+        t = x.size(1)
+        x = x + self.pe[:, :t]
         return self.dropout(x)
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(self):
@@ -67,29 +66,19 @@ class MultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(DROPOUT_RATE)
         self.atten = None
 
-    # Q,K,V的形状是[T, B, C]
-    def forward(self, query, key, value, mask = None):
-        t_q = query.size(0)
-        t_k = key.size(0)
-        b = query.size(1)
+    def forward(self, query, key, value, mask=None):
+        t_q = query.size(1)
+        t_kv = key.size(1)
+        b = query.size(0)
         h = self.head_count
         d = self.head_size
-
-        query = self.w_q(query)
-        key = self.w_k(key)
-        value = self.w_v(value)
-
-        # [T, B, H*D] → [T, B, H, D] → [B, H, T, D]
-        query = query.view(t_q, b, h, d).permute(1, 2, 0, 3)
-        key = key.view(t_k, b, h, d).permute(1, 2, 0, 3)
-        value = value.view(t_k, b, h, d).permute(1, 2, 0, 3)
-
-        # 计算注意力权重: 输出形状 [B, H, T_q, D]
-        attention = F.scaled_dot_product_attention(query, key, value, mask)
-
-        # [B, H, T_q, D] → [B, T_q, H, D] → contiguous → [B, T_q, H*D] → [T_q, B, C]
-        attention = attention.transpose(1, 2).contiguous().view(b, t_q, h * d)
-        attention = attention.transpose(0, 1)
+        query = self.w_q(query).view(b, t_q, h, d).transpose(1,2)
+        key = self.w_k(key).view(b, t_kv, h, d).transpose(1,2)
+        value = self.w_v(value).view(b, t_kv, h, d).transpose(1,2)
+        # F.scaled_dot_product_attention在推理的时候也会执行dropout，这里做一个区分
+        dropout_p = DROPOUT_RATE if self.training else 0.0
+        attention = F.scaled_dot_product_attention(query, key, value, attn_mask=mask, dropout_p=dropout_p)
+        attention = attention.transpose(1,2).contiguous().view(b, t_q, h*d)
         output = self.w_o(attention)
         output = self.dropout(output)
         return output

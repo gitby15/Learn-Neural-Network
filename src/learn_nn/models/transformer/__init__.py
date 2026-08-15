@@ -30,7 +30,7 @@ def main():
     log_output_line(f"\n=== 完成 ===")
     log_output_line(f"  训练集大小: {len(pairs)}")
     log_output_line(f"  测试集大小: {len(test_pairs)}")
-    log_output_line(f"  Transformer (3-layer) avg chrF: {transformer_avg_chrf:.4f}")
+    log_output_line(f"  Transformer avg chrF: {transformer_avg_chrf:.4f}")
 
 
 if __name__ == "__main__":

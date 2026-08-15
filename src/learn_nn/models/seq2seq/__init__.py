@@ -11,7 +11,7 @@ torch.manual_seed(_SEED_)
 torch.cuda.manual_seed_all(_SEED_)
 np.random.seed(_SEED_)
 
-EPOCHS = 70
+EPOCHS = 30
 DATA_TOKEN_MAX_LEN = 6
 
 

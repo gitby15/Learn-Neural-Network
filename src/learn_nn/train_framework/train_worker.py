@@ -17,6 +17,7 @@ from learn_nn.train_framework._utils_ import (
     log_output_line,
     INFERENCE_START_TAG, INFERENCE_END_TAG,
 )
+from learn_nn.train_framework.tensor_handler import TensorHandlerBTC
 
 BATCH_SIZE = 32
 torch.set_default_device(get_device())
@@ -172,7 +173,7 @@ class TrainWorker:
         """
        
         _model = self.model
-        batches = TensorHandler.pairs_to_batches(train_pairs)
+        batches = TensorHandlerBTC.pairs_to_train_batches(train_pairs)
         epoch_batches = list(batches)
         criterion_ce = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
         # criterion_nl = nn.NLLLoss(ignore_index=PAD_IDX)
@@ -267,7 +268,8 @@ class EvaluateWorker:
                 # ----- 字符串 → idx → 单条 tensor -----
                 src_idx = tokenize_source(src_str)
                 ref_idx = tokenize_target(ref_str)
-                src_tensor = TensorHandler.src_idx_to_train_tensor(src_idx)
+                # src_tensor = TensorHandler.src_idx_to_train_tensor(src_idx)
+                src_tensor = TensorHandlerBTC.src_str_to_tensor(src_str)
 
                 inf_logits = _model(src_tensor)
                 pred_idx = inf_logits.argmax(dim=-1).reshape(-1).tolist()

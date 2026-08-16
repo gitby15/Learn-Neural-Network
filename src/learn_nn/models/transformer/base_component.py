@@ -4,13 +4,13 @@ import torch.nn.functional as F
 import math
 
  
-HEAD_SIZE = 64
-HEAD_COUNT = 8
+HEAD_SIZE = 32
+HEAD_COUNT = 16
 ATTENTION_SIZE = HEAD_COUNT* HEAD_SIZE
 
 
-EMBED_SIZE = 512
-DROPOUT_RATE = 0.01
+EMBED_SIZE = ATTENTION_SIZE
+DROPOUT_RATE = 0.1
 
 MAX_IMPUT_LEN = 512 # 暂定一句话最长只有512个token，诶，有点像LLM的最大上下文长度
 

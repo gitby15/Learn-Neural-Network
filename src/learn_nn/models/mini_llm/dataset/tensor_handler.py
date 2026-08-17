@@ -1,6 +1,6 @@
 class TensorHandler:
     @staticmethod
-    def padding(idx_list_batch: list[list[int]], pad_idx:int) -> list[list[int]]:
+    def align_batch_idx(idx_list_batch: list[list[int]], pad_idx:int) -> list[list[int]]:
         # 找出最长的list
         max_len = max(len(idx) for idx in idx_list_batch)
         # 对每一个list进行填充

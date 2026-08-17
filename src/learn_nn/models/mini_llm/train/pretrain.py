@@ -1,71 +1,206 @@
-
+from learn_nn.models.mini_llm.dataset.minimind import PretrainDataset
+from learn_nn.models.mini_llm.dataset.tokenizer.minimind_tokenizer import MinimindTokenizer
 import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 import math
+import random
+import os
 
-class PreTrainWorker():
-    def __init__(self, model:nn.Module, epochs: int = 10):
+
+_PROJECT_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
+)
+CHECKPOINT_DIR = os.path.join(_PROJECT_ROOT, "checkpoints")
+CHECKPOINT_FILE = "pretrain.pt"
+CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, CHECKPOINT_FILE)
+
+
+BASE_LR = 3e-4
+MIN_LR_RATIO = 0.1
+WEIGHT_DECAY = 0.01
+BETAS = (0.9, 0.98)
+EPS = 1e-9
+WARMUP_RATIO = 0.1
+GRAD_CLIP_NORM = 1.0
+
+
+class PreTrainWorker:
+    def __init__(self, model: nn.Module, epochs: int = 10):
         self.epochs = epochs
         self.model = model
+        self.tokenizer = MinimindTokenizer().get_tokenizer()
+        self.dataset = PretrainDataset(tokenizer=self.tokenizer)
 
-    # pairs需要输入的形状是([B,T,C], [B,T,C])
-    def train(self, pairs: list):
-        _model = self.model
-        criterion_ce = nn.CrossEntropyLoss(ignore_index=-100)
-        # ---- Transformer 推荐的优化器与学习率调度 ----
-        # 1) 用 AdamW (带 decoupled weight decay) 替代 Adam
-        BASE_LR = 3e-4       # 比 0.001 稍稳一些，可调 1e-4 ~ 5e-4
-        WEIGHT_DECAY = 0.01  # Transformer 标配
-        WARMUP_RATIO = 0.1   # 前 10% steps 做 warmup        
-        optimizer = torch.optim.AdamW(
-            _model.parameters(),
+    def _build_optimizer(self) -> torch.optim.Optimizer:
+        use_fused = torch.cuda.is_available()
+        return torch.optim.AdamW(
+            self.model.parameters(),
             lr=BASE_LR,
-            betas=(0.9, 0.98),   # 原始 Transformer 论文推荐
-            eps=1e-9,
+            betas=BETAS,
+            eps=EPS,
             weight_decay=WEIGHT_DECAY,
+            fused=use_fused,
         )
 
-        # 2) 总训练步数 = epoch 数 * 每 epoch 的 batch 数
-        total_steps = self.epochs * max(1, 1)
+    def _build_scheduler(
+        self, optimizer: torch.optim.Optimizer, total_steps: int
+    ) -> LambdaLR:
         warmup_steps = int(total_steps * WARMUP_RATIO)
 
-        # 3) 学习率曲线: warmup 线性上升 → cosine 衰减到 0
-        def _lr_lambda(current_step: int) -> float:
-            if current_step < warmup_steps:
-                # warmup: 线性从 0 -> 1 (再乘 BASE_LR 就是实际 lr)
-                return float(current_step) / float(max(1, warmup_steps))
-            # cosine 从 1 衰减到 0
-            progress_step = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-            return max(1e-4, 0.5 * (1.0 + math.cos(math.pi * progress_step)))
+        def lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return float(step) / float(max(1, warmup_steps))
+            progress = float(step - warmup_steps) / float(
+                max(1, total_steps - warmup_steps)
+            )
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+            return MIN_LR_RATIO + (1.0 - MIN_LR_RATIO) * cosine_decay
 
-        scheduler = LambdaLR(optimizer, lr_lambda=_lr_lambda)
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-        progress = tqdm(range(self.epochs), desc="Training")
-        
-        global_step = 0
-        _model.train()
-        for idx in progress:
+    @staticmethod
+    def _compute_loss(logits, labels, criterion):
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        return criterion(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        )
+
+    def _save_checkpoint(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: LambdaLR,
+        scaler: torch.amp.GradScaler,
+        epoch: int,
+        global_step: int,
+    ):
+        os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+        torch.save(
+            {
+                "epoch": epoch,
+                "global_step": global_step,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
+            },
+            CHECKPOINT_PATH,
+        )
+
+    def _load_model_weights(self, model: nn.Module) -> bool:
+        if not os.path.exists(CHECKPOINT_PATH):
+            return False
+        print(f"[Checkpoint] 从 {CHECKPOINT_PATH} 加载模型权重（继续预训练模式）...")
+        ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=True)
+        model.load_state_dict(ckpt["model_state_dict"])
+        print(f"[Checkpoint] 模型权重加载成功（原训练进度: epoch={ckpt['epoch']}, step={ckpt['global_step']}）")
+        return True
+
+    def _load_full_state(
+        self,
+        model: nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: LambdaLR,
+        scaler: torch.amp.GradScaler,
+    ) -> tuple[int, int]:
+        if not os.path.exists(CHECKPOINT_PATH):
+            return 0, 0
+        print(f"[Checkpoint] 从 {CHECKPOINT_PATH} 完整恢复训练状态（断点续训模式）...")
+        ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=True)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        scaler.load_state_dict(ckpt["scaler_state_dict"])
+        start_epoch = ckpt["epoch"]
+        global_step = ckpt["global_step"]
+        print(f"[Checkpoint] 已恢复: epoch={start_epoch}, global_step={global_step}")
+        return start_epoch, global_step
+
+    def train(self, pairs_batches: list, resume: bool = True):
+        """
+        Args:
+            pairs_batches: 训练数据批次列表
+            resume: True=断点续训（恢复所有状态，从上次中断的epoch继续）
+                    False=继续预训练（只加载模型权重，optimizer/scheduler/epoch全部重置，
+                           适用于用更多数据或新数据继续训练）
+        """
+        model = self.model
+        criterion = nn.CrossEntropyLoss(ignore_index=-100)
+
+        optimizer = self._build_optimizer()
+        total_steps = self.epochs * len(pairs_batches)
+        scheduler = self._build_scheduler(optimizer, total_steps)
+        scaler = torch.amp.GradScaler("cuda")
+
+        if resume:
+            start_epoch, global_step = self._load_full_state(
+                model, optimizer, scheduler, scaler
+            )
+        else:
+            self._load_model_weights(model)
+            start_epoch, global_step = 0, 0
+
+        model.train()
+        progress = tqdm(range(start_epoch, self.epochs), desc="Training")
+
+        for epoch in progress:
             epoch_loss = 0.0
-            # random.shuffle(epoch_batches)
-            for input_idx_batch, label_batch in pairs:
-                # pretrain.py 的 loss 计算处
-                logits = _model(input_idx_batch)           # [B, T, V]
-                loss = criterion_ce(
-                    logits.view(-1, logits.size(-1)),
-                    label_batch.view(-1),
-                )
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(_model.parameters(), max_norm=1.0)
-                optimizer.step()
-                # 每个 batch step 更新一次学习率 (step-based 而非 epoch-based)
+            random.shuffle(pairs_batches)
+
+            for input_ids, labels in pairs_batches:
+                with torch.amp.autocast("cuda"):
+                    logits = model(input_ids)
+                    loss = self._compute_loss(logits, labels, criterion)
+
+                optimizer.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
+                scaler.step(optimizer)
+                scaler.update()
                 scheduler.step()
+
                 global_step += 1
                 epoch_loss += loss.item()
-            avg = epoch_loss / max(1, len(pairs))
+
+            avg_loss = epoch_loss / max(1, len(pairs_batches))
             cur_lr = optimizer.param_groups[0]["lr"]
-            progress.set_postfix(loss=f"{avg:.6f}", lr=f"{cur_lr:.2e}")        
+            progress.set_postfix(loss=f"{avg_loss:.6f}", lr=f"{cur_lr:.2e}")
 
+            self._save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, global_step)
 
+    def inference(self, input_str_batch: list[str]) -> list[str]:
+        input_idx_batch = self.dataset.input_str_to_batch(input_str_batch)
+        self.model.eval()
+        with torch.no_grad():
+            logits = self.model(input_idx_batch)
+        next_token_logits = logits[:, -1, :]
+        result_idx_batch = next_token_logits.argmax(dim=-1).tolist()
+        result_str_batch = [
+            self.tokenizer.decode(result_idx) for result_idx in result_idx_batch
+        ]
+        return result_str_batch
+
+    def evaluate(self, pairs: list):
+        self.model.eval()
+        criterion = nn.CrossEntropyLoss(ignore_index=-100, reduction="sum")
+        total_loss = 0.0
+        total_tokens = 0
+        with torch.no_grad():
+            for input_idx_batch, label_batch in pairs:
+                logits = self.model(input_idx_batch)
+                shift_labels = label_batch[..., 1:].contiguous()
+                n_tokens = shift_labels.ne(-100).sum().item()
+                shift_logits = logits[..., :-1, :].contiguous()
+                loss = criterion(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                )
+                total_loss += loss.item()
+                total_tokens += n_tokens
+        avg_loss = total_loss / max(1, total_tokens)
+        return avg_loss

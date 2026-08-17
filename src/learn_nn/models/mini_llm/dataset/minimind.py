@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from datasets import load_dataset
 from modelscope.hub.file_download import dataset_file_download
-from learn_nn.models.mini_llm.tokenizer.minimind_tokenizer import MinimindTokenizer
+from learn_nn.models.mini_llm.dataset.tokenizer.minimind_tokenizer import MinimindTokenizer
 from learn_nn.models.mini_llm.dataset.tensor_handler import TensorHandler
 MAX_LENGTH = 512
 
@@ -11,7 +11,7 @@ def _download_data():
         dataset_id='gongjy/minimind_dataset',
         file_path='pretrain_t2t_mini.jsonl'
     )
-    # print(f"文件保存路径: {file_path}")
+    print(f"预训练文件保存路径: {file_path}")
     return file_path
 
 
@@ -50,6 +50,13 @@ class PretrainDataset(Dataset):
         
         return input_ids, labels
 
+    def input_str_to_batch(self, input_str_list: list[list[str]]):
+        input_idx_list = [self.tokenizer(input_str)['input_ids'] for input_str in input_str_list]
+        input_idx_list = TensorHandler.align_batch_idx(input_idx_list, self.tokenizer.pad_token_id)
+        input_idx_batch_tensor = torch.tensor(input_idx_list, dtype=torch.long)
+
+        return input_idx_batch_tensor
+
     def get_train_batchs(self,row_count:int, batch_size: int):
 
         # 返回的input_idx和label都是[B, T结构]
@@ -62,8 +69,8 @@ class PretrainDataset(Dataset):
             label_batch.append(idx_pair[1])
             count = i+1
             if count%batch_size==0 or count == row_count:
-                padded_input_batch = TensorHandler.padding(input_batch, self.tokenizer.pad_token_id)
-                padded_label_batch = TensorHandler.padding(label_batch, -100)
+                padded_input_batch = TensorHandler.align_batch_idx(input_batch, self.tokenizer.pad_token_id)
+                padded_label_batch = TensorHandler.align_batch_idx(label_batch, -100)
 
                 batchs.append((torch.tensor(padded_input_batch, dtype=torch.long), torch.tensor(padded_label_batch, dtype=torch.long)))
                 input_batch = []

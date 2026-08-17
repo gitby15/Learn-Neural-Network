@@ -24,7 +24,7 @@ dependencies = [
 [project.scripts]
 seq2seq = "learn_nn.models.seq2seq:main"
 timformer = "learn_nn.models.transformer:main"
-timweb = "learn_nn.web_server:main"
+timllm-inference = "learn_nn.web_server.tim_llm_inference:main"
 timllm = "learn_nn.models.mini_llm.train:main"
 
 [build-system]

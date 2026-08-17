@@ -23,11 +23,12 @@ if torch.cuda.is_available():
 print(f"using device: {DEVICE}")
 
 def main():
-    batchs, tokenizer = get_dataset(100000, 128)
-    model = MiniLLM(len(tokenizer))
-    model = torch.compile(model)
-    train_worker = PreTrainWorker(model, epochs=100)
-    train_worker.train(batchs)
+    # batchs, tokenizer = get_dataset(100000, 128)
+    # model = MiniLLM(len(tokenizer))
+    # model = torch.compile(model)
+    
+    train_worker = PreTrainWorker()
+    # train_worker.train(batchs, epochs=100)
     input_str = ['今天天气', '番茄炒']
 
     result = train_worker.inference(input_str)

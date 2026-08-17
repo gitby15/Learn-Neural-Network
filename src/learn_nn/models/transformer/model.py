@@ -27,7 +27,7 @@ class TimTransformer(nn.Module):
             next_logit = decoder_output[:, -1:, :]  # [B, T, V] -> [B, 1, V]
             logits.append(next_logit)
             # 取最后一步的 token 并追加到 input_token 末尾
-            next_token = torch.argmax(next_logit, dim=-1)  # [B, 1]
+            next_token = torch.argmax(next_logit, dim=-1)  # [1, B]
             input_token = torch.cat([input_token, next_token], dim=1)
             # 所有 batch 都生成了 EOS 则停止
             if next_token.eq(EOS_IDX).all():
@@ -49,7 +49,6 @@ class TimTransformer(nn.Module):
                 (batch_size, 1),
                 fill_value=SOS_IDX,
                 dtype=torch.long,
-                device=src.device,
             )            
             logits = self._self_generation(input_token, encoder_output, src_padding_mask)
             

@@ -1,5 +1,6 @@
 from learn_nn.models.mini_llm.dataset.minimind import PretrainDataset
 from learn_nn.models.mini_llm.dataset.tokenizer.minimind_tokenizer import MinimindTokenizer
+from learn_nn.models.mini_llm.model_code.model import MiniLLM
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,11 +29,12 @@ GRAD_CLIP_NORM = 1.0
 
 
 class PreTrainWorker:
-    def __init__(self, model: nn.Module, epochs: int = 10):
-        self.epochs = epochs
-        self.model = model
+    def __init__(self):
         self.tokenizer = MinimindTokenizer().get_tokenizer()
         self.dataset = PretrainDataset(tokenizer=self.tokenizer)
+        _model = MiniLLM(len(self.tokenizer))
+        self.model = torch.compile(_model)
+        self.load_weight_times = 0
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         use_fused = torch.cuda.is_available()
@@ -99,6 +101,7 @@ class PreTrainWorker:
         ckpt = torch.load(CHECKPOINT_PATH, map_location="cpu", weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"])
         print(f"[Checkpoint] 模型权重加载成功（原训练进度: epoch={ckpt['epoch']}, step={ckpt['global_step']}）")
+        self.load_weight_times += 1
         return True
 
     def _load_full_state(
@@ -121,7 +124,7 @@ class PreTrainWorker:
         print(f"[Checkpoint] 已恢复: epoch={start_epoch}, global_step={global_step}")
         return start_epoch, global_step
 
-    def train(self, pairs_batches: list, resume: bool = True):
+    def train(self, pairs_batches: list, resume: bool = True, epochs: int=100):
         """
         Args:
             pairs_batches: 训练数据批次列表
@@ -133,7 +136,7 @@ class PreTrainWorker:
         criterion = nn.CrossEntropyLoss(ignore_index=-100)
 
         optimizer = self._build_optimizer()
-        total_steps = self.epochs * len(pairs_batches)
+        total_steps = epochs * len(pairs_batches)
         scheduler = self._build_scheduler(optimizer, total_steps)
         scaler = torch.amp.GradScaler("cuda")
 
@@ -146,7 +149,7 @@ class PreTrainWorker:
             start_epoch, global_step = 0, 0
 
         model.train()
-        progress = tqdm(range(start_epoch, self.epochs), desc="Training")
+        progress = tqdm(range(start_epoch, epochs), desc="Training")
 
         for epoch in progress:
             epoch_loss = 0.0
@@ -223,8 +226,11 @@ class PreTrainWorker:
             results.append(tokenizer.decode(gen_ids))
         return results
 
-    def inference(self, input_str_batch: list[str], **kwargs) -> list[str]:
-        return self.generate(input_str_batch, **kwargs)
+    def inference(self, input_str_batch: list[str]) -> list[str]:
+        if os.path.exists(CHECKPOINT_PATH) and self.load_weight_times == 0:
+            print("从磁盘读取模型权重：", CHECKPOINT_PATH)
+            self._load_model_weights(self.model)
+        return self.generate(input_str_batch)
 
     def evaluate(self, pairs: list):
         self.model.eval()

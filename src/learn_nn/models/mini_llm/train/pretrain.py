@@ -2,6 +2,7 @@ from learn_nn.models.mini_llm.dataset.minimind import PretrainDataset
 from learn_nn.models.mini_llm.dataset.tokenizer.minimind_tokenizer import MinimindTokenizer
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from tqdm import tqdm
 import math
@@ -173,17 +174,57 @@ class PreTrainWorker:
 
             self._save_checkpoint(model, optimizer, scheduler, scaler, epoch + 1, global_step)
 
-    def inference(self, input_str_batch: list[str]) -> list[str]:
-        input_idx_batch = self.dataset.input_str_to_batch(input_str_batch)
-        self.model.eval()
-        with torch.no_grad():
-            logits = self.model(input_idx_batch)
-        next_token_logits = logits[:, -1, :]
-        result_idx_batch = next_token_logits.argmax(dim=-1).tolist()
-        result_str_batch = [
-            self.tokenizer.decode(result_idx) for result_idx in result_idx_batch
-        ]
-        return result_str_batch
+    @torch.no_grad()
+    def generate(
+        self,
+        input_str_batch: list[str],
+        max_new_tokens: int = 64,
+        temperature: float = 1.0,
+        top_k: int = 0,
+    ) -> list[str]:
+        model = self.model
+        tokenizer = self.tokenizer
+        device = next(model.parameters()).device
+        model.eval()
+
+        results = []
+        for text in input_str_batch:
+            input_ids = [tokenizer.bos_token_id] + tokenizer(
+                text, add_special_tokens=False
+            )["input_ids"]
+            input_ids = torch.tensor([input_ids], dtype=torch.long, device=device)
+
+            for _ in range(max_new_tokens):
+                logits = model(input_ids)
+                next_logits = logits[:, -1, :]
+
+                if temperature > 0 and temperature != 1.0:
+                    next_logits = next_logits / temperature
+
+                if top_k > 0:
+                    v, _ = torch.topk(next_logits, min(top_k, next_logits.size(-1)))
+                    next_logits[next_logits < v[:, [-1]]] = float("-inf")
+
+                if temperature == 0:
+                    next_token = next_logits.argmax(dim=-1, keepdim=True)
+                else:
+                    probs = F.softmax(next_logits, dim=-1)
+                    next_token = torch.multinomial(probs, num_samples=1)
+
+                if next_token.item() == tokenizer.eos_token_id:
+                    break
+
+                input_ids = torch.cat([input_ids, next_token], dim=1)
+
+            gen_ids = input_ids[0].tolist()
+            prompt_token_count = 1 + len(tokenizer(text, add_special_tokens=False)["input_ids"])
+            gen_ids = gen_ids[prompt_token_count:]
+            gen_ids = [t for t in gen_ids if t not in (tokenizer.pad_token_id, tokenizer.eos_token_id)]
+            results.append(tokenizer.decode(gen_ids))
+        return results
+
+    def inference(self, input_str_batch: list[str], **kwargs) -> list[str]:
+        return self.generate(input_str_batch, **kwargs)
 
     def evaluate(self, pairs: list):
         self.model.eval()

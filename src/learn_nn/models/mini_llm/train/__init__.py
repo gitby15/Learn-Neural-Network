@@ -23,7 +23,7 @@ if torch.cuda.is_available():
 print(f"using device: {DEVICE}")
 
 def main():
-    batchs, tokenizer = get_dataset(10000, 128)
+    batchs, tokenizer = get_dataset(100000, 128)
     model = MiniLLM(len(tokenizer))
     model = torch.compile(model)
     train_worker = PreTrainWorker(model, epochs=100)
